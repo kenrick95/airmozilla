@@ -2,8 +2,7 @@ Air Mozilla
 ===========
 
 [![Build Status](https://travis-ci.org/mozilla/airmozilla.svg?branch=master)](https://travis-ci.org/mozilla/airmozilla)
-[![Coverage Status](https://coveralls.io/repos/mozilla/airmozilla/badge.png?branch=master)](https://coveralls.io/r/mozilla/airmozilla?branch=master)
-
+[![Coverage Status](https://coveralls.io/repos/mozilla/airmozilla/badge.svg?branch=master&service=github)](https://coveralls.io/github/mozilla/airmozilla?branch=master)
 
 Live: [https://air.mozilla.org](https://air.mozilla.org)
 Stage: [https://air.allizom.org](https://air.allizom.org)
@@ -26,7 +25,7 @@ How to get it running locally from scratch
 ### First of all...
 
 All of these manual steps can be done with one optimistic script. All you
-need is to have Python (2.6 or 2.7) installed.
+need is to have Python (2.7) installed.
 
 [Download this file](https://raw.githubusercontent.com/mozilla/airmozilla/master/devup.py)
 and manually run:
@@ -49,7 +48,7 @@ Not system people deploying the code for production.
 
 **Step 1 - The stuff you need**
 
-You're going to need Git, Python 2.6 or Python 2.7, a PostgreSQL database
+You're going to need Git, Python 2.7, a PostgreSQL database
 (partially works with MySQL and SQLite too) and the necessary python dev
 libraries so you can install binary python packages. On a mac, that means you
 need to install XCode and on Linux you'll need to install `python-dev`.
@@ -60,7 +59,8 @@ has a lot of useful information.
 Once you have a virtualenv you want to use, you need to install all the
 dependencies. You do this with:
 
-    pip install -r requirements.txt
+    pip install bin/peep-2.4.1.tar.gz
+    peep install -r requirements.txt
     pip install -r dev-requirements.txt
 
 The second file is necessary so you can
@@ -148,7 +148,7 @@ For security, you need to enter something into the `SECRET_KEY`.
 SECRET_KEY = 'somethingnotempty'
 ```
 
-By default, you need a `Memcache` server up and running. The connection
+**By default, you need a `Memcache` server up and running.** The connection
 settings for that is not entered by default. So if you have a Memcache running
 on the default port you need to enter it for the `LOCATION` setting like this:
 ```
@@ -207,6 +207,48 @@ And last but not least:
 ```
 
 Now you should be able to open `http://localhost:8000`.
+
+
+**Step 6 - Running the Celeryd message queue worker**
+
+We use a message queue to execute some slow tasks in the background.
+By default it doesn't need neither RabbitMQ or Redis to hold the jobs.
+Instead, by default, it uses our own Django and PostgreSQL which we
+use for everything else.
+
+To start the message queue worker use:
+
+```
+./manage.py celeryd
+```
+
+To test that this is working, once you've signed in to the site for the
+first time, and signed in as a super user you will get an extra link
+in the Management pages called "Tasks Tester". Click that to make a
+test that your message queue is working.
+
+Random/Sample data
+------------------
+
+Now that you have a working version running you'll find that it has nothing
+in it. This will make it harder to get a feel for certain features
+and it definitely makes it hard to optimize things where there's so little
+there.
+
+There is a command that is under active development and creates the bare
+minimum. If you find it's not creating certain type of data that you
+need then feel free to send in a patch on the `fakedata.py` code.
+
+You can run this command repeatedly and it should not break.
+
+```
+./manage.py generate-fake-data 1000
+```
+
+The number at the end is how many events you want to generate.
+
+This will also create various other things like random Regions, Locations,
+VideoTemplates, Pictures, Users etc.
 
 How to get it running with Docker Compose
 -----------------------------------------
@@ -305,7 +347,7 @@ When a pull request is made, our automation will check a couple of things:
    This rule is there to remove any debate about how to style code as per
    how a machine likes it. It makes it non-subjective and clear.
 
-2. All tests are run on Travis in Python 2.6. If any test fails, the pull
+2. All tests are run on Travis in Python 2.7. If any test fails, the pull
    request fails.
 
 3. Test coverage regression. Test coverage is measured for every pull request
@@ -496,40 +538,42 @@ Another common mistake is to *not* have `SESSION_COOKIE_SECURE = False` in your
 `airmozilla/settings/local.py` but using `http://localhost:8000` to reach
 the site.
 
-### Tests are not working
+### Tests are slow
 
-If tests don't work around code you didn't touch, it might be that your test
-database is out-of-sync so then next time simply run: `FORCE_DB=1 ./manage.py test`.
+By default when you run `./manage.py test ...` it will re-create the
+database for every run. This takes 5-10 seconds extra time every time.
+If you know that the testing process doesn't involve any complexities
+in terms of migrations, you can speed up the tests a lot by setting
+the environment variable `REUSE_DB=1`. For example like this:
+
+    REUSE_DB=1 ./manage.py test
+
+Or to make it stick, use:
+
+    export REUSE_DB=1
+    ./manage.py test
+
 
 Migrations
 ----------
-We're using [South][south] to handle database migrations.
-To generate a schema migration, make changes to models.py, then run:
 
-``./manage.py schemamigration airmozilla.main --auto``
+To generate a schema migration, make changes to `models.py`, then run:
 
-or
+``./manage.py makemigrations main``
 
-``./manage.py schemamigration airmozilla.comments --auto``
+If you, for example, made a migration to the `main` app.
 
 To generate a blank data migration, use:
 
-``./manage.py datamigration airmozilla.main data_migration_name``
+``./manage.py makemigrations main --empty``
 
 Then fill in the generated file with logic, fixtures, etc.
 
 To apply migrations:
 
 ```
-./manage.py migrate airmozilla.main
-./manage.py migrate airmozilla.comments
-./manage.py migrate airmozilla.uploads
-./manage.py migrate airmozilla.subtitles
-./manage.py migrate airmozilla.surveys
-./manage.py migrate airmozilla.cronlogger
+./manage.py migrate
 ```
-
-In each command, replace airmozilla.main with the appropriate app.
 
 
 Requirements
@@ -587,6 +631,19 @@ data so that you're now a superuser.
 >>> my_user.is_superuser = True
 >>> my_user.is_staff = True
 >>> my_user.save()
+```
+
+Optimizing thumbnails
+---------------------
+
+By default, the thumbnails that are generated from uploads of PNG files
+ get generated as `.png` thumbnail files. These tend to be
+pretty large and can be optimized down without virtually any visual
+difference. To enable it, install [pngquant](https://pngquant.org/) and
+the override the local settings and set it like this:
+
+```
+PNGQUANT_LOCATION = 'pngquant'
 ```
 
 Adding a sample video

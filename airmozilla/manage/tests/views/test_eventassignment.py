@@ -5,7 +5,7 @@ from nose.tools import eq_, ok_
 from django.contrib.auth.models import User
 from django.utils import timezone
 
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Event, EventAssignment, Location
 from .base import ManageTestCase
@@ -74,9 +74,9 @@ class TestEventAssignment(ManageTestCase):
 
         # add another, also upcoming, event and make sure it's
         # working for events that have no assignments too
-        Event.objects.create(
+        event1 = Event.objects.create(
             title='Other title',
-            start_time=event.start_time
+            start_time=event.start_time,
         )
         # and add a location to the assignment too
         barcelona = Location.objects.create(name='Barcelona')
@@ -87,6 +87,12 @@ class TestEventAssignment(ManageTestCase):
         eq_(response.status_code, 200)
         ok_('Other title' in response.content)
         ok_('Barcelona' in response.content)
+
+        event1.status = Event.STATUS_REMOVED
+        event1.save()
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Other title' not in response.content)
 
     def test_event_assignments_ical_for_assignee(self):
         url = reverse('manage:event_assignments_ical')

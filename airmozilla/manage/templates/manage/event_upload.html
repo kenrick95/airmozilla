@@ -38,6 +38,8 @@
         data-vidly-shortcut-url="{{ url('manage:vidly_url_to_shortcode', event.pk) }}"
         data-vidly-submit-details='{{ json_print(vidly_submit_details) }}'
         data-event-archive-url="{{ url('manage:event_archive', event.pk) }}"
+        data-event-fetch-duration-url="{{ url('manage:event_fetch_duration', event.pk) }}"
+        data-event-fetch-screencaptures-url="{{ url('manage:event_fetch_screencaptures', event.pk) }}"
         data-event-archive-details='{{ json_print(event_archive_details) }}'>
     {{ csrf() }}
 
@@ -121,7 +123,7 @@
   </table>
   {% endif %}
 
-   <p style="margin-top:25px">
+   <p style="margin-top:35px; clear:left">
      <a href="{{ url('manage:event_edit', event.pk) }}">&larr; Return to event</a>
    </p>
 

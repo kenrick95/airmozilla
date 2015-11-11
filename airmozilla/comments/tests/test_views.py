@@ -6,14 +6,14 @@ import uuid
 import mock
 
 from django.core.cache import cache
-from django.test import TestCase
 from django.contrib.auth.models import User
 from django.core import mail
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
 
 from airmozilla.main.models import Event
+from airmozilla.base.tests.testbase import Response, DjangoTestCase
 from airmozilla.comments.views import (
     can_manage_comments,
     get_latest_comment
@@ -23,53 +23,13 @@ from airmozilla.comments.models import (
     Comment,
     Unsubscription
 )
+from airmozilla.base.tests.test_mozillians import (
+    VOUCHED_FOR_USERS,
+    VOUCHED_FOR,
+)
 
 
-MOZILLIAN_USER = """
-{
-  "meta": {
-    "previous": null,
-    "total_count": 1,
-    "offset": 0,
-    "limit": 20,
-    "next": null
-  },
-  "objects": [
-    {
-      "website": "",
-      "bio": "",
-      "resource_uri": "/api/v1/users/2429/",
-      "last_updated": "2012-11-06T14:41:47",
-      "groups": [
-        "ugly tuna"
-      ],
-      "city": "Casino",
-      "skills": [],
-      "country": "Albania",
-      "region": "Bush",
-      "id": "2429",
-      "languages": [],
-      "allows_mozilla_sites": true,
-      "photo": "http://www.gravatar.com/avatar/0409b497734934400822bb33...",
-      "is_vouched": true,
-      "email": "peterbe@mozilla.com",
-      "ircname": "",
-      "allows_community_sites": true,
-      "full_name": "Peter Bengtsson"
-    }
-  ]
-}
-"""
-
-
-class Response(object):
-    def __init__(self, content=None, status_code=200):
-        self.content = content
-        self.status_code = status_code
-
-
-class TestComments(TestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
+class TestComments(DjangoTestCase):
 
     def _create_discussion(self, event, enabled=True, moderate_all=True,
                            notify_all=True):
@@ -463,8 +423,10 @@ class TestComments(TestCase):
         cache.clear()
 
         def mocked_get(url, **options):
+            if '/v2/users/99999' in url:
+                return Response(VOUCHED_FOR)
             if 'peterbe' in url:
-                return Response(MOZILLIAN_USER)
+                return Response(VOUCHED_FOR_USERS)
             raise NotImplementedError(url)
         rget.side_effect = mocked_get
 

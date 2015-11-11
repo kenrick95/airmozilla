@@ -2,6 +2,7 @@ from django.contrib import messages
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db import transaction
 from django.db.models import Count
+from django.core.urlresolvers import reverse
 
 from jsonview.decorators import json_view
 
@@ -46,15 +47,6 @@ def templates(request):
     for each in events.values('template').annotate(Count('template')):
         counts_removed[each['template']] = each['template__count']
 
-    # def count_events_with_template(template):
-    #     return Event.objects.filter(template=template).count()
-    #
-    # def count_removed_events_with_template(template):
-    #     return Event.objects.filter(
-    #         template=template,
-    #         status=Event.STATUS_REMOVED
-    #     ).count()
-
     context['counts'] = counts
     context['counts_removed'] = counts_removed
     return render(request, 'manage/templates.html', context)
@@ -63,7 +55,7 @@ def templates(request):
 @staff_required
 @permission_required('main.change_template')
 @cancel_redirect('manage:templates')
-@transaction.commit_on_success
+@transaction.atomic
 def template_edit(request, id):
     template = get_object_or_404(Template.objects, id=id)
     if request.method == 'POST':
@@ -87,7 +79,14 @@ def template_edit(request, id):
                     other_template.default_archive_template = False
                     other_template.save()
 
-            messages.info(request, 'Template "%s" saved.' % template.name)
+            messages.info(
+                request,
+                'Template <b>{name}</b> saved. [Edit again]({url})'.format(
+                    name=template.name,
+                    url=reverse('manage:template_edit', args=(template.id,)),
+                )
+            )
+
             return redirect('manage:templates')
     else:
         form = forms.TemplateEditForm(instance=template)
@@ -105,7 +104,7 @@ def template_edit(request, id):
 @staff_required
 @permission_required('main.add_template')
 @cancel_redirect('manage:templates')
-@transaction.commit_on_success
+@transaction.atomic
 def template_new(request):
     if request.method == 'POST':
         form = forms.TemplateEditForm(request.POST, instance=Template())
@@ -120,10 +119,42 @@ def template_new(request):
 
 @staff_required
 @permission_required('main.delete_template')
-@transaction.commit_on_success
+@transaction.atomic
 def template_remove(request, id):
     if request.method == 'POST':
         template = Template.objects.get(id=id)
         template.delete()
         messages.info(request, 'Template "%s" removed.' % template.name)
     return redirect('manage:templates')
+
+
+@staff_required
+@permission_required('main.change_template')
+@cancel_redirect(lambda r, id: reverse('manage:template_edit', args=(id,)))
+@transaction.atomic
+def template_migrate(request, id):
+
+    template = get_object_or_404(Template.objects, id=id)
+    if request.method == 'POST':
+        form = forms.TemplateMigrateForm(request.POST, instance=template)
+        if form.is_valid():
+            count = Event.objects.filter(template=template).count()
+            Event.objects.filter(template=template).update(
+                template=form.cleaned_data['template']
+            )
+            messages.info(
+                request,
+                "{count} events moved to the template {name}".format(
+                    count=count,
+                    name=form.cleaned_data['template'].name
+                )
+            )
+            return redirect('manage:template_edit', template.id)
+    else:
+        form = forms.TemplateMigrateForm(instance=template)
+
+    context = {
+        'template': template,
+        'form': form,
+    }
+    return render(request, 'manage/template_migrate.html', context)

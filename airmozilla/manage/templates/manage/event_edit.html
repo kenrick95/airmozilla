@@ -69,23 +69,36 @@
       {% endif %}
       <br>
       {{ suggested_event.user.email }}
+      <a href="{{ url('manage:suggestion_review', suggested_event.id) }}"
+         title="Allows you to send comments to the to {{ suggested_event.user.email }}"
+         >See request</a>
     </p>
     {% endif %}
 
     {% if event.duration %}
     <p>
-      <strong>
-        Video duration: {{ show_duration(event.duration) }}
-      </strong>
+      <b>Duration:</b>
+      <a href="{{ url('manage:event_edit_duration', event.id) }}"
+         title="Change or introspect the duration value"
+         >{{ show_duration(event.duration, include_seconds=True) }}</a>
     </p>
     {% endif %}
 
-    {% if total_hits %}
-    <p>
-      <strong>
-        Total Hits: {{ thousands(total_hits) }}
-      </strong>
-    </p>
+    {% if archived_hits or live_hits %}
+    <dl class="hits">
+      {% if archived_hits %}
+        <dt>Archived hits:</dt>
+        <dd>{{ thousands(archived_hits) }}</dd>
+      {% endif %}
+      {% if live_hits %}
+        <dt>Live hits:</dt>
+        <dd>{{ thousands(live_hits) }}</dd>
+      {% endif %}
+      {% if archived_hits and live_hits %}
+        <dt>Total hits:</dt>
+        <dd>{{ thousands(archived_hits + live_hits) }}</dd>
+      {% endif %}
+    </dl>
     {% endif %}
 
     {% if suggested_event and suggested_event.upload %}
@@ -93,15 +106,20 @@
         <table class="event-upload">
           <tr>
             <th>Name:</th>
-            <td class="file-name">{{ suggested_event.upload.file_name }}</td>
+            <td class="file-name">
+              <a href="{{ suggested_event.upload.url }}">{{ suggested_event.upload.file_name }}</a>
+            </td>
           </tr>
           <tr>
             <th>Size:</th>
-            <td>{{ suggested_event.upload.size | filesizeformat }}</td>
-          </tr>
-          <tr>
-            <th>URL:</th>
-            <td><a href="{{ suggested_event.upload.url }}">Open</td>
+            <td>
+              {{ suggested_event.upload.size | filesizeformat }}
+              {% if suggested_event.upload.upload_time %}
+                <small>
+                  ({{ show_duration(suggested_event.upload.upload_time) }} to upload)
+                </small>
+              {% endif %}
+            </td>
           </tr>
         </table>
         <p><a href="{{ url('manage:event_upload', event.pk) }}" class="btn btn-primary btn-sm">Upload a different file</a></p>
@@ -110,19 +128,35 @@
         <table class="event-upload">
            <tr>
              <th>Name:</th>
-             <td class="file-name">{{ event.upload.file_name }}</td>
+             <td class="file-name">
+               <a href="{{ event.upload.url }}">
+                 {{ event.upload.file_name }}
+                </a>
+             </td>
            </tr>
            <tr>
              <th>Size:</th>
-             <td>{{ event.upload.size | filesizeformat }}</td>
+             <td>
+               {{ event.upload.size | filesizeformat }}
+               {% if event.upload.upload_time %}
+                 <small>
+                   ({{ show_duration(event.upload.upload_time) }} to upload)
+                 </small>
+               {% endif %}
+             </td>
            </tr>
+           {% if count_event_uploads and request.user.is_superuser %}
            <tr>
-             <th>URL:</th>
-             <td><a href="{{ event.upload.url }}">Open</td>
+             <td colspan="2">
+               <a href="{{ url('manage:uploads') }}?event={{ event.id }}">
+                 See all <b>{{ count_event_uploads }}</b> uploads for this event
+                </a>
+             </td>
            </tr>
+           {% endif %}
         </table>
         <p><a href="{{ url('manage:event_upload', event.pk) }}" class="btn btn-primary btn-sm">Upload a different file</a></p>
-    {% elif event.is_pending() %}
+    {% elif event.is_pending() or event.is_processing() %}
         <p style="margin-top:25px"><strong>File Upload</strong></p>
         <p><a href="{{ url('manage:event_upload', event.pk) }}" class="btn btn-primary btn-sm">Upload original file</a></p>
     {% endif %}
@@ -166,11 +200,15 @@
       {% if loop.last %}</ul>{% endif %}
     {% endfor %}
 
+    <p>
     {% if tweets %}
-    <p><a href="{{ url('manage:event_tweets', event.pk) }}" class="btn btn-primary btn-sm">Manage tweets</a></p>
+      <a href="{{ url('manage:event_tweets', event.pk) }}" class="btn btn-primary btn-sm">Manage tweets</a>
+    {% elif event.is_public() %}
+      <a href="{{ url('manage:new_event_tweet', event.pk) }}" class="btn btn-primary btn-sm">Prepare a new tweet</a>
     {% else %}
-    <p><a href="{{ url('manage:new_event_tweet', event.pk) }}" class="btn btn-primary btn-sm">Prepare a new tweet</a></p>
+      Not a public event
     {% endif %}
+    </p>
 
     {% if is_vidly_event %}
     <p style="margin-top:25px"><strong>Vid.ly Media</strong></p>
@@ -278,6 +316,48 @@
       {% endif %}
     </p>
 
+    <p style="margin-top:25px"><strong>Chapters</strong></p>
+    <p>
+      <a href="{{ url('manage:event_chapters', event.id) }}"
+         class="btn btn-primary btn-sm">Chapters ({{ chapters_count }})</a>
+    </p>
+
+    {% if is_superuser %}
+    <p style="margin-top:25px"><strong>Archive Time</strong></p>
+    <p>
+      {% if event.archive_time %}
+      {{ event.archive_time | js_date }}
+      {% else %}
+      Not archived
+      {% endif %}
+      <br>
+      <a href="{{ url('manage:event_archive_time', event.id) }}"
+         class="btn btn-xs btn-primary"
+      >Change</a>
+    </p>
+
+    {% if event.is_removed() %}
+    <p style="margin-top:25px"><strong>Really Delete</strong></p>
+    <p class="really-delete-metadata">
+        This event last changed {{ event.modified | js_date }}
+      <br>
+      <a href="#"
+         class="btn btn-xs btn-primary really-delete"
+      >Delete</a>
+    </p>
+    <form action="{{ url('manage:event_delete', event.id) }}"
+          method="post"
+          class="really-delete-confirmation">
+      {{ csrf() }}
+      <b>Are you sure?</b><br>
+      This will delete everything associated with this event.<br>
+      <button type="submit" class="btn btn-xs btn-primary"
+      >Yes delete forever</button>
+      <a href="#" class="btn btn-xs btn-default cancel">Cancel</a>
+    </form>
+    {% endif %}
+    {% endif %}
+
   </div>
 </div>
 {% endblock %}
@@ -296,18 +376,7 @@
     </p>
   </div>
 
-  {% if event.mozillian %}
-  <div class="alert alert-warning alert-dismissible" role="alert">
-    <button type="button" class="close" data-dismiss="alert"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
-    <p>
-      <b>Note!</b>
-      This event is a Mozillians profile for
-      <a href="{{ mozillians_permalink(event.mozillian) }}">{{ mozillians_permalink(event.mozillian) }}</a>
-    </p>
-  </div>
-  {% endif %}
-
-  {% include 'manage/_default_form_upload.html' %}
+  {% include "manage/_default_form_upload.html" %}
 
   {% if suggested_event_comments %}
   <div class="suggested-event-comments">

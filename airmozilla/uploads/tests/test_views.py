@@ -6,14 +6,13 @@ import mock
 from nose.tools import eq_, ok_
 
 from django.conf import settings
-from django.test import TestCase
 from django.core.cache import cache
 from django.contrib.auth.models import User
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
-
+from airmozilla.base.tests.testbase import DjangoTestCase
 from airmozilla.uploads.models import Upload
-from airmozilla.main.models import Event, SuggestedEvent
+from airmozilla.main.models import Event
 
 
 class HeadResponse(object):
@@ -21,8 +20,7 @@ class HeadResponse(object):
         self.headers = headers
 
 
-class TestUploads(TestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
+class TestUploads(DjangoTestCase):
 
     def _login(self):
         user = User.objects.create_user('richard', password='secret')
@@ -147,41 +145,6 @@ class TestUploads(TestCase):
 
         event = Event.objects.get(pk=event.pk)
         eq_(event.upload, upload)
-
-    @mock.patch('requests.head')
-    def test_save_on_an_active_suggested_event(self, rhead):
-        def mocked_head(url, **options):
-            return HeadResponse(**{'content-length': 123456})
-        rhead.side_effect = mocked_head
-
-        self._login()
-        # start suggesting a pre-recorded event
-        url = reverse('suggest:start')
-        response = self.client.post(url, {
-            'title': 'My Video',
-            'event_type': 'pre-recorded'
-        })
-        eq_(response.status_code, 302)
-        event = SuggestedEvent.objects.get(title='My Video')
-        assert not event.upcoming
-
-        url = reverse('uploads:save')
-        response = self.client.post(url, {
-            'url': 'https://aws.com/foo.flv'
-        })
-        eq_(response.status_code, 200)
-        structure = json.loads(response.content)
-        new_id = structure['id']
-        # this should exist
-        Upload.objects.get(pk=new_id)
-        next_url = reverse('suggest:description', args=(event.pk,))
-        eq_(
-            structure['suggested_event'],
-            {
-                'title': event.title,
-                'url': next_url
-            }
-        )
 
     @mock.patch('requests.head')
     def test_verify_size(self, rhead):

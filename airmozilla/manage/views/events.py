@@ -3,6 +3,11 @@ import datetime
 import hashlib
 import re
 import urlparse
+import os
+
+import pytz
+import vobject
+import boto
 
 from django.conf import settings
 from django import http
@@ -13,13 +18,11 @@ from django.contrib import messages
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 from django.db import transaction
-from django.db.models import Q, Sum, Count
+from django.db.models import Q, Sum, Count, Max
 from django.core.exceptions import ImproperlyConfigured
 from django.views.decorators.cache import cache_page
+from django.core.urlresolvers import reverse
 
-import pytz
-from funfactory.urlresolvers import reverse
-import vobject
 from jsonview.decorators import json_view
 
 from airmozilla.main.helpers import thumbnail, short_desc
@@ -31,6 +34,7 @@ from airmozilla.base.utils import (
     unhtml,
     shorten_url,
     get_base_url,
+    prepare_vidly_video_url,
 )
 from airmozilla.main.models import (
     Approval,
@@ -43,9 +47,11 @@ from airmozilla.main.models import (
     SuggestedEventComment,
     VidlySubmission,
     EventHitStats,
+    EventLiveHits,
     CuratedGroup,
     EventAssignment,
-    Picture
+    Picture,
+    Chapter,
 )
 from airmozilla.subtitles.models import AmaraVideo
 from airmozilla.main.views import is_contributor
@@ -54,9 +60,11 @@ from airmozilla.manage.tweeter import send_tweet
 from airmozilla.manage import vidly
 from airmozilla.manage import archiver
 from airmozilla.manage import sending
+from airmozilla.manage import videoinfo
 from airmozilla.comments.models import Discussion, Comment
 from airmozilla.surveys.models import Survey
-
+from airmozilla.uploads.models import Upload
+from airmozilla.base.helpers import show_duration
 from .decorators import (
     staff_required,
     permission_required,
@@ -69,11 +77,13 @@ from .utils import can_edit_event, get_var_templates, STOPWORDS
 @staff_required
 @permission_required('main.add_event')
 @cancel_redirect('manage:events')
-@transaction.commit_on_success
+@transaction.atomic
 def event_request(request, duplicate_id=None):
     """Event request page:  create new events to be published."""
-    if (request.user.has_perm('main.add_event_scheduled')
-            or request.user.has_perm('main.change_event_others')):
+    if (
+        request.user.has_perm('main.add_event_scheduled') or
+        request.user.has_perm('main.change_event_others')
+    ):
         form_class = forms.EventExperiencedRequestForm
     else:
         form_class = forms.EventRequestForm
@@ -195,9 +205,23 @@ def events(request):
 def events_data(request):
     events = []
     qs = (
-        Event.objects.all()
+        Event.objects
+        .exclude(status=Event.STATUS_INITIATED)
         .order_by('-modified')
     )
+    form = forms.EventsDataForm(request.GET)
+    if not form.is_valid():
+        return http.HttpResponseBadRequest(str(form.errors))
+
+    if form.cleaned_data['since']:
+        qs = qs.filter(modified__gt=form.cleaned_data['since'])
+
+    max_modified = qs.aggregate(Max('modified'))
+    if max_modified['modified__max']:
+        max_modified = max_modified['modified__max'].isoformat()
+    else:
+        max_modified = None
+
     _can_change_event_others = (
         request.user.has_perm('main.change_event_others')
     )
@@ -305,8 +329,6 @@ def events_data(request):
             row['is_upcoming'] = is_upcoming
         if needs_approval:
             row['needs_approval'] = True
-        if event.mozillian:
-            row['mozillian'] = event.mozillian
         if event.id in pictures_counts:
             row['pictures'] = pictures_counts[event.id]
         if event.picture_id:
@@ -350,7 +372,7 @@ def events_data(request):
         'manage:picturegallery': reverse('manage:picturegallery'),
     }
 
-    return {'events': events, 'urls': urls}
+    return {'events': events, 'urls': urls, 'max_modified': max_modified}
 
 
 def _event_process(request, form, event):
@@ -414,7 +436,7 @@ def _event_process(request, form, event):
 @staff_required
 @permission_required('main.change_event')
 @cancel_redirect('manage:events')
-@transaction.commit_on_success
+@transaction.atomic
 def event_edit(request, id):
     """Edit form for a particular event."""
     event = get_object_or_404(Event, id=id)
@@ -437,6 +459,10 @@ def event_edit(request, id):
         if form.is_valid():
             event = form.save(commit=False)
             _event_process(request, form, event)
+            if not event.location:
+                event.start_time = event.start_time.replace(
+                    tzinfo=timezone.utc
+                )
             event.save()
             form.save_m2m()
             edit_url = reverse('manage:event_edit', args=(event.pk,))
@@ -474,9 +500,7 @@ def event_edit(request, id):
             )
             return redirect('manage:events')
     else:
-        timezone.activate(pytz.timezone('UTC'))
         initial = {}
-        initial['timezone'] = timezone.get_current_timezone()  # UTC
         initial['curated_groups'] = ','.join(
             x[0] for x in curated_groups.values_list('name')
         )
@@ -515,12 +539,12 @@ def event_edit(request, id):
     now = timezone.now()
     time_ago = now - datetime.timedelta(minutes=15)
     if (
-        event.status == Event.STATUS_PENDING
-        and event.template
-        and 'Vid.ly' in event.template.name
-        and event.template_environment  # can be None
-        and event.template_environment.get('tag')
-        and not VidlySubmission.objects.filter(
+        event.status == Event.STATUS_PENDING and
+        event.template and
+        'Vid.ly' in event.template.name and
+        event.template_environment and  # can be None
+        event.template_environment.get('tag') and
+        not VidlySubmission.objects.filter(
             event=event,
             submission_time__gte=time_ago
         )
@@ -544,6 +568,8 @@ def event_edit(request, id):
         .select_related('group')
     )
 
+    context['chapters_count'] = Chapter.objects.filter(event=event).count()
+
     try:
         context['assignment'] = EventAssignment.objects.get(event=event)
     except EventAssignment.DoesNotExist:
@@ -557,10 +583,15 @@ def event_edit(request, id):
     except Survey.DoesNotExist:
         context['survey'] = None
 
-    context['total_hits'] = 0
+    context['archived_hits'] = 0
+    context['live_hits'] = 0
 
     for each in EventHitStats.objects.filter(event=event).values('total_hits'):
-        context['total_hits'] += each['total_hits']
+        context['archived_hits'] += each['total_hits']
+    for each in EventLiveHits.objects.filter(event=event).values('total_hits'):
+        context['live_hits'] += each['total_hits']
+
+    context['count_event_uploads'] = Upload.objects.filter(event=event).count()
 
     return render(request, 'manage/event_edit.html', context)
 
@@ -592,6 +623,52 @@ def event_privacy_vidly_mismatch(request, id):
     return is_privacy_vidly_mismatch(event)
 
 
+@staff_required
+@permission_required('main.change_event')
+@cancel_redirect('manage:events')
+@transaction.atomic
+def event_edit_duration(request, id):
+    event = get_object_or_404(Event, id=id)
+    result = can_edit_event(event, request.user)
+    if isinstance(result, http.HttpResponse):
+        return result
+
+    if request.method == 'POST':
+        form = forms.EventDurationForm(request.POST, instance=event)
+        if form.is_valid():
+            event = form.save()
+            if event.duration:
+                messages.success(
+                    request,
+                    'Duration set to %s' % show_duration(event.duration)
+                )
+            else:
+                videoinfo.fetch_duration(
+                    event,
+                    save=True,
+                    verbose=settings.DEBUG
+                )
+                new_duration = Event.objects.get(id=event.id).duration
+                if new_duration is not None:
+                    new_duration = show_duration(
+                        new_duration,
+                        include_seconds=True
+                    )
+                messages.success(
+                    request,
+                    'Duration re-set to %s' % new_duration
+                )
+            return redirect('manage:event_edit', event.id)
+    else:
+        form = forms.EventDurationForm(instance=event)
+
+    context = {
+        'event': event,
+        'form': form,
+    }
+    return render(request, 'manage/event_edit_duration.html', context)
+
+
 @cache_page(60)
 def redirect_event_thumbnail(request, id):
     """The purpose of this is to be able to NOT have to generate the
@@ -612,15 +689,74 @@ def redirect_event_thumbnail(request, id):
 @require_POST
 @staff_required
 @permission_required('main.change_event')
-@transaction.commit_on_success
+@transaction.atomic
 def event_stop_live(request, id):
     """Convenient thing that changes the status and redirects you to
     go and upload a file."""
     event = get_object_or_404(Event, id=id)
-    event.status = Event.STATUS_PENDING
+    event.status = Event.STATUS_PROCESSING
     event.save()
 
     return redirect('manage:event_upload', event.pk)
+
+
+@require_POST
+@superuser_required
+@transaction.atomic
+def event_delete(request, id):
+    """Don't just delete the event record, but delete everything associated
+    with it:
+        * S3 Uploads
+        * Pictures and their files
+    """
+    event = get_object_or_404(Event, id=id, status=Event.STATUS_REMOVED)
+
+    s3_keys = {}
+    for upload in Upload.objects.filter(event=event):
+        key = urlparse.urlparse(upload.url).path
+        s3_keys[upload.id] = key
+    if s3_keys:
+        conn = boto.connect_s3(
+            settings.AWS_ACCESS_KEY_ID,
+            settings.AWS_SECRET_ACCESS_KEY
+        )
+        bucket = conn.get_bucket(settings.S3_UPLOAD_BUCKET)
+        for id, key in s3_keys.items():
+            bucket.delete_key(key)
+
+    no_vidly_medias = 0
+    for submission in VidlySubmission.objects.filter(event=event):
+        tag, error = vidly.delete_media(submission.tag)
+        if not error:
+            no_vidly_medias += 1
+            submission.delete()
+
+    no_pictures = 0
+    for picture in Picture.objects.filter(event=event):
+        # make sure it's not used by anybody else
+        other_events = (
+            Event.objects
+            .exclude(id=event.id)
+            .filter(picture=picture)
+        )
+        if not other_events.count():
+            if os.path.isfile(picture.file.path):
+                picture.delete()
+                os.remove(picture.file.path)
+                no_pictures += 1
+
+    with transaction.atomic():
+        event.delete()
+        messages.success(
+            request,
+            'Event wiped off the face of the earth (%d S3 uploads, '
+            '%d Vid.ly videos, %d pictures)' % (
+                len(s3_keys),
+                no_vidly_medias,
+                no_pictures,
+            )
+        )
+    return redirect('manage:events')
 
 
 @staff_required
@@ -827,7 +963,7 @@ def event_vidly_submission(request, id, submission_id):
 
 @superuser_required
 @require_POST
-@transaction.commit_on_success
+@transaction.atomic
 def event_archive_auto(request, id):
     event = get_object_or_404(Event, id=id)
     assert 'Vid.ly' in event.template.name
@@ -842,7 +978,7 @@ def event_archive_auto(request, id):
 
 @staff_required
 @permission_required('main.change_event')
-@transaction.commit_on_success
+@transaction.atomic
 def event_tweets(request, id):
     """Summary of tweets and submission of tweets"""
     data = {}
@@ -889,10 +1025,10 @@ def event_tweets(request, id):
 
 @staff_required
 @permission_required('main.change_event')
-@cancel_redirect('manage:events')
-@transaction.commit_on_success
+@cancel_redirect(lambda r, id: reverse('manage:event_tweets', args=(id,)))
+@transaction.atomic
 def new_event_tweet(request, id):
-    data = {}
+    context = {}
     event = get_object_or_404(Event, id=id)
 
     if request.method == 'POST':
@@ -904,8 +1040,7 @@ def new_event_tweet(request, id):
                 tz = pytz.timezone(event.location.timezone)
                 event_tweet.send_date = tz_apply(event_tweet.send_date, tz)
             else:
-                now = timezone.now()
-                event_tweet.send_date = now
+                event_tweet.send_date = timezone.now()
             event_tweet.event = event
             event_tweet.creator = request.user
             event_tweet.save()
@@ -919,27 +1054,81 @@ def new_event_tweet(request, id):
         abs_url = urlparse.urljoin(base_url, event_url)
         try:
             abs_url = shorten_url(abs_url)
-            data['shortener_error'] = None
-        except (ImproperlyConfigured, ValueError) as err:
-            data['shortener_error'] = str(err)
-        # except OtherHttpRelatedErrors?
-        #    data['shortener_error'] = "Network error trying to shorten URL"
+            context['shortener_error'] = None
+        except (ImproperlyConfigured, ValueError) as err:  # pragma: no cover
+            context['shortener_error'] = str(err)
 
         initial['text'] = unhtml('%s\n%s' % (short_desc(event), abs_url))
         initial['include_placeholder'] = bool(event.placeholder_img)
-        initial['send_date'] = ''
+        if event.start_time > timezone.now():
+            if event.location:
+                start_time = event.location_time
+            else:
+                start_time = event.start_time
+            initial['send_date'] = (start_time - datetime.timedelta(
+                minutes=30
+            )).strftime('%Y-%m-%d %H:%M')
+
         form = forms.EventTweetForm(initial=initial, event=event)
 
-    data['event'] = event
-    data['form'] = form
-    data['tweets'] = EventTweet.objects.filter(event=event)
+        if event.start_time > timezone.now():
+            if event.location:
+                event.location.timezone
+                start_time = event.location_time
+                start_time = start_time.strftime('%Y-%m-%d %H:%M')
+            else:
+                # this'll display it with full timezone information
+                start_time = str(event.start_time)
+            form.fields['send_date'].help_text += (
+                " Note! This event starts %s" % (
+                    start_time,
+                )
+            )
 
-    return render(request, 'manage/new_event_tweet.html', data)
+    context['event'] = event
+    context['form'] = form
+    context['tweets'] = EventTweet.objects.filter(event=event)
+
+    return render(request, 'manage/new_event_tweet.html', context)
 
 
 @staff_required
 @permission_required('main.change_event')
-@transaction.commit_on_success
+@cancel_redirect(
+    lambda r, id, tweet_id: reverse('manage:event_tweets', args=(id,))
+)
+@transaction.atomic
+def edit_event_tweet(request, id, tweet_id):
+    tweet = get_object_or_404(EventTweet, event__id=id, id=tweet_id)
+
+    if request.method == 'POST':
+        form = forms.EventTweetForm(
+            data=request.POST,
+            instance=tweet,
+            event=tweet.event
+        )
+        if form.is_valid():
+            tweet = form.save()
+            if tweet.send_date:
+                assert tweet.event.location, "event must have a location"
+                tz = pytz.timezone(tweet.event.location.timezone)
+                tweet.send_date = tz_apply(tweet.send_date, tz)
+                tweet.save()
+            messages.success(request, 'Tweet saved')
+            return redirect('manage:event_tweets', tweet.event.id)
+    else:
+        form = forms.EventTweetForm(instance=tweet, event=tweet.event)
+
+    context = {
+        'form': form,
+        'event': tweet.event,
+    }
+    return render(request, 'manage/edit_event_tweet.html', context)
+
+
+@staff_required
+@permission_required('main.change_event')
+@transaction.atomic
 def all_event_tweets(request):
     """Summary of tweets and submission of tweets"""
     tweets = (
@@ -959,10 +1148,10 @@ def all_event_tweets(request):
 @staff_required
 @permission_required('main.change_event_others')
 @cancel_redirect('manage:events')
-@transaction.commit_on_success
+@transaction.atomic
 def event_archive(request, id):
     """Dedicated page for setting page template (archive) and archive time."""
-    event = Event.objects.get(id=id)
+    event = get_object_or_404(Event, id=id)
     if request.method == 'POST':
         form = forms.EventArchiveForm(request.POST, instance=event)
         if form.is_valid():
@@ -981,7 +1170,12 @@ def event_archive(request, id):
                 event.has_vidly_template() and
                 not has_successful_vidly_submission(event)
             ):
-                event.status = Event.STATUS_PENDING
+                # some events go from live -> to transcoding -> to archived
+                # and others go right away from transcoding -> to archived
+                # this IF makes sure the event is not currently transcoding
+                # before its status changes to PENDING
+                if event.status != Event.STATUS_PROCESSING:
+                    event.status = Event.STATUS_PENDING
             else:
                 event.status = Event.STATUS_SCHEDULED
                 now = (
@@ -1027,6 +1221,60 @@ def event_archive(request, id):
         'default_archive_template': default_archive_template,
     }
     return render(request, 'manage/event_archive.html', context)
+
+
+@superuser_required
+@cancel_redirect(lambda r, id: reverse('manage:event_edit', args=(id,)))
+@transaction.atomic
+def event_archive_time(request, id):
+    event = get_object_or_404(Event, id=id)
+    if request.method == 'POST':
+        form = forms.EventArchiveTimeForm(request.POST, instance=event)
+        if form.is_valid():
+            form.save()
+            messages.info(request, 'Event archive time saved.')
+            return redirect('manage:event_edit', event.id)
+    else:
+        form = forms.EventArchiveTimeForm(instance=event)
+    context = {
+        'form': form,
+        'event': event,
+    }
+    return render(request, 'manage/event_archive_time.html', context)
+
+
+@require_POST
+@transaction.atomic
+@json_view
+def event_fetch_duration(request, id):
+    event = get_object_or_404(Event, id=id)
+    duration = event.duration
+    if not event.duration and event.upload:
+        duration = videoinfo.fetch_duration(
+            event,
+            video_url=event.upload.url,
+            save=True,
+            verbose=settings.DEBUG
+        )
+
+    return {'duration': duration}
+
+
+@require_POST
+@transaction.atomic
+@json_view
+def event_fetch_screencaptures(request, id):
+    event = get_object_or_404(Event, id=id)
+    pictures = Picture.objects.filter(event=event).count()
+    if not pictures and event.duration and event.upload:
+        pictures = videoinfo.fetch_screencapture(
+            event,
+            video_url=event.upload.url,
+            save=True,
+            verbose=settings.DEBUG,
+        )
+
+    return {'pictures': pictures}
 
 
 @staff_required
@@ -1090,7 +1338,7 @@ def event_hit_stats(request):
 
 @staff_required
 @permission_required('comments.change_discussion')
-@transaction.commit_on_success
+@transaction.atomic
 def event_discussion(request, id):
     context = {}
     event = get_object_or_404(Event, id=id)
@@ -1200,10 +1448,8 @@ def event_comments(request, id):
             filtered = True
         if form.cleaned_data['user']:
             user_filter = (
-                Q(user__email__icontains=form.cleaned_data['user'])
-                |
-                Q(user__first_name__icontains=form.cleaned_data['user'])
-                |
+                Q(user__email__icontains=form.cleaned_data['user']) |
+                Q(user__first_name__icontains=form.cleaned_data['user']) |
                 Q(user__last_name__icontains=form.cleaned_data['user'])
             )
             comments = comments.filter(user_filter)
@@ -1248,7 +1494,11 @@ def event_assignments(request):
 
     events = []
     now = timezone.now()
-    qs = Event.objects.filter(start_time__gte=now)
+    qs = (
+        Event.objects
+        .exclude(status=Event.STATUS_REMOVED)
+        .filter(start_time__gte=now)
+    )
     for event in qs.order_by('start_time'):
         try:
             assignment = EventAssignment.objects.get(event=event)
@@ -1318,7 +1568,9 @@ def event_assignments_ical(request):
             event.start_time - datetime.timedelta(minutes=30)
         )
         vevent.add('dtend').value = (
-            event.start_time + datetime.timedelta(hours=1)
+            event.start_time + datetime.timedelta(
+                seconds=event.estimated_duration
+            )
         )
         emails = [u.email for u in assignment.users.all().order_by('email')]
         vevent.add('description').value = 'Assigned to: ' + ', '.join(emails)
@@ -1354,7 +1606,7 @@ def event_assignments_ical(request):
 @staff_required
 @permission_required('main.change_event')
 @cancel_redirect(lambda r, id: reverse('manage:event_edit', args=(id,)))
-@transaction.commit_on_success
+@transaction.atomic
 def event_survey(request, id):
     event = get_object_or_404(Event, id=id)
     survey = None
@@ -1416,6 +1668,8 @@ def vidly_url_to_shortcode(request, id):
 
         base_url = get_base_url(request)
         webhook_url = base_url + reverse('manage:vidly_media_webhook')
+
+        url = prepare_vidly_video_url(url)
 
         shortcode, error = vidly.add_media(
             url,

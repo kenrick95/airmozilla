@@ -20,8 +20,13 @@ class Upload(models.Model):
         null=True,
         related_name='event'
     )
+    upload_time = models.PositiveIntegerField(null=True, blank=True)
     created = models.DateTimeField(auto_now_add=True)
     modified = models.DateTimeField(auto_now=True)
 
     def __unicode__(self):
-        return self.file_name
+        return self.file_name or self.url
+
+    @property
+    def upload_speed(self):
+        return float(self.size) / self.upload_time

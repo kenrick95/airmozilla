@@ -1,19 +1,18 @@
 import datetime
 from cStringIO import StringIO
 
-from django.test import TestCase
+import mock
+from nose.tools import eq_, ok_
+
 from django.core import mail
 from django.conf import settings
 from django.utils import timezone
 from django.test.utils import override_settings
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
-
-import mock
-from nose.tools import eq_, ok_
-
+from airmozilla.base.tests.testbase import DjangoTestCase
 from airmozilla.manage.archiver import archive
-from airmozilla.main.models import Event, Template
+from airmozilla.main.models import Event, Template, VidlySubmission
 
 
 SAMPLE_XML = (
@@ -48,8 +47,7 @@ SAMPLE_MEDIALIST_XML = (
 )
 
 
-class ArchiverTestCase(TestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
+class ArchiverTestCase(DjangoTestCase):
 
     def _age_event_created(self, event, save=True):
         extra_seconds = settings.PESTER_INTERVAL_DAYS * 24 * 60 * 60 + 1
@@ -119,9 +117,38 @@ class ArchiverTestCase(TestCase):
 
         sent_email = mail.outbox[-1]
         eq_(sent_email.to, [x[1] for x in settings.ADMINS])
-        ok_('Unable to archive pending event' in sent_email.subject)
+        ok_('Unable to archive event' in sent_email.subject)
         ok_('abc123' in sent_email.subject)
         ok_(reverse('manage:event_edit', args=(event.pk,)) in sent_email.body)
+
+    @override_settings(ADMINS=(('F', 'foo@bar.com'),))
+    @mock.patch('urllib2.urlopen')
+    def test_errored_updating_vidly_submission(self, p_urlopen):
+
+        def mocked_urlopen(request):
+            xml = SAMPLE_XML.replace(
+                '<Status>Finished</Status>',
+                '<Status>Error</Status>',
+            )
+            return StringIO(xml.strip())
+
+        p_urlopen.side_effect = mocked_urlopen
+
+        event = Event.objects.get(title='Test event')
+        vidly_template = Template.objects.create(name='Vid.ly Test')
+        event.template = vidly_template
+        event.template_environment = {'tag': 'abc123'}
+        event.save()
+        vidly_submission = VidlySubmission.objects.create(
+            event=event,
+            url='https://example.com',
+            tag='abc123'
+        )
+        archive(event)
+
+        vidly_submission = VidlySubmission.objects.get(id=vidly_submission.id)
+        ok_(vidly_submission.errored)
+        ok_(not vidly_submission.finished)
 
     @mock.patch('urllib2.urlopen')
     def test_processing(self, p_urlopen):
@@ -170,3 +197,29 @@ class ArchiverTestCase(TestCase):
             now.strftime('%Y%m%d %H%M'),
         )
         eq_(event.status, Event.STATUS_SCHEDULED)
+
+    @mock.patch('urllib2.urlopen')
+    def test_finished_updating_vidly_submission(self, p_urlopen):
+
+        def mocked_urlopen(request):
+            return StringIO(SAMPLE_XML.strip())
+
+        p_urlopen.side_effect = mocked_urlopen
+
+        event = Event.objects.get(title='Test event')
+        event.status = Event.STATUS_PENDING
+        event.archive_time = None
+        vidly_template = Template.objects.create(name='Vid.ly Test')
+        event.template = vidly_template
+        event.template_environment = {'tag': 'abc123'}
+        event.save()
+        vidly_submission = VidlySubmission.objects.create(
+            event=event,
+            url='https://example.com',
+            tag='abc123'
+        )
+        archive(event)
+
+        vidly_submission = VidlySubmission.objects.get(id=vidly_submission.id)
+        ok_(not vidly_submission.errored)
+        ok_(vidly_submission.finished)

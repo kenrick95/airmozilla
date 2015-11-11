@@ -1,16 +1,15 @@
 import datetime
 
-from django.test import TestCase
 from django.core import mail
 from django.contrib.auth.models import Group, User
 from django.conf import settings
 from django.contrib.sites.models import Site
 from django.utils import timezone
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from nose.tools import eq_, ok_
 
+from airmozilla.base.tests.testbase import DjangoTestCase
 from airmozilla.manage.pestering import pester
 from airmozilla.main.models import (
     Approval,
@@ -18,8 +17,7 @@ from airmozilla.main.models import (
 )
 
 
-class PesteringTestCase(TestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
+class PesteringTestCase(DjangoTestCase):
 
     def _age_event_created(self, event, save=True):
         extra_seconds = settings.PESTER_INTERVAL_DAYS * 24 * 60 * 60 + 1

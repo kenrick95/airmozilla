@@ -2,19 +2,49 @@ import time
 import datetime
 import re
 import urllib
-import json
 import subprocess
 import os
+import urlparse
+import random
 
 import pytz
+import requests
 from slugify import slugify
 
 from django.core.handlers.wsgi import WSGIRequest
 from django.conf import settings
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.core.exceptions import ImproperlyConfigured
-from django.contrib.sites.models import RequestSite
+from django.contrib.sites.models import RequestSite, Site
 from django.core.mail.backends.filebased import EmailBackend
+from django.forms.utils import ErrorList
+from django.contrib.staticfiles.storage import staticfiles_storage
+
+from airmozilla.base.akamai_token_v2 import AkamaiToken
+
+
+def roughly(number, variance_percentage=20):
+    """return a number that is roughly what you inputted but
+    slightly smaller or slightly bigger.
+
+    For example, if you feed it 100, return 96 or 117 or 91 or 102.
+    Basically, take or add a certain percentage to the number.
+
+    This is useful if you stuff a lot of stuff in the cache and don't
+    want them all to expire at the same time but instead stagger
+    the expiration times a bit.
+    """
+    percentage = random.randint(-variance_percentage, variance_percentage)
+    return int(number * (1 + percentage / 100.0))
+
+
+def simplify_form_errors(errors):
+    copy = {}
+    for key, value in errors.items():
+        if isinstance(value, ErrorList):
+            value = list(value)
+        copy[key] = value
+    return copy
 
 
 class EmlEmailBackend(EmailBackend):
@@ -47,20 +77,20 @@ def shorten_url(url):
     """return the URL shortened with Bit.ly"""
     if not settings.BITLY_ACCESS_TOKEN:
         raise ImproperlyConfigured('BITLY_ACCESS_TOKEN not set')
-    bitly_base_url = 'https://api-ssl.bitly.com/v3/shorten'
-    qs = urllib.urlencode({
-        'access_token': settings.BITLY_ACCESS_TOKEN,
-        'longUrl': url
-    })
-    bitly_url = '%s?%s' % (bitly_base_url, qs)
-    response = urllib.urlopen(bitly_url).read()
-    result = json.loads(response)
+    response = requests.get(
+        settings.BITLY_URL,
+        params={
+            'access_token': settings.BITLY_ACCESS_TOKEN,
+            'longUrl': url
+        }
+    )
+    result = response.json()
     if result.get('status_code') == 500:
         raise ValueError(result.get('status_txt'))
     return result['data']['url']
 
 
-def unique_slugify(data, models, duplicate_key='', lower=True):
+def unique_slugify(data, models, duplicate_key='', lower=True, exclude=None):
     """Returns a unique slug string.  If duplicate_key is provided, this is
        appended for non-unique slugs before adding a count."""
     slug_base = slugify(data)
@@ -68,7 +98,14 @@ def unique_slugify(data, models, duplicate_key='', lower=True):
         slug_base = slug_base.lower()
     counter = 0
     slug = slug_base
-    while any(model.objects.filter(slug=slug).exists() for model in models):
+
+    def query(model):
+        qs = model.objects.filter(slug=slug)
+        if exclude:
+            qs = qs.exclude(**exclude)
+        return qs
+
+    while any(query(model).exists() for model in models):
         counter += 1
         if counter == 1 and duplicate_key:
             slug_base += '-' + duplicate_key
@@ -150,6 +187,33 @@ def edgecast_tokenize(seconds=None, **kwargs):
     return out.strip()
 
 
+def akamai_tokenize(
+    window_seconds=180,
+    token_name='hdnea',
+    start_time='now',
+    ip=None,
+    url=None,
+    access_list='/*/*_Restricted/*',
+    key=None,
+    escape_early=False,
+    verbose=False,
+    **other
+):
+    config = other
+    config['key'] = key or settings.AKAMAI_SECURE_KEY
+    assert config['key'], "no key set up"
+    config['window_seconds'] = window_seconds
+    config['start_time'] = start_time
+    config['token_name'] = token_name
+    config['ip'] = ip
+    config['acl'] = access_list
+    config['verbose'] = verbose
+    config['escape_early'] = escape_early
+    generator = AkamaiToken(**config)
+    token = generator.generateToken()
+    return token
+
+
 def fix_base_url(base_url):
     """because most of the functions in this file can take either a
     base_url (string) or a request, we make this easy with a quick
@@ -182,6 +246,22 @@ def dot_dict(d):
     return _DotDict(d)
 
 
+def get_abs_static(path, request):
+    path = staticfiles_storage.url(path)
+    prefix = request.is_secure() and 'https' or 'http'
+
+    if path.startswith('/') and not path.startswith('//'):
+        # e.g. '/media/foo.png'
+        root_url = get_base_url(request)
+        path = root_url + path
+
+    if path.startswith('//'):
+        path = '%s:%s' % (prefix, path)
+
+    assert path.startswith('http://') or path.startswith('https://')
+    return path
+
+
 def get_base_url(request):
     return (
         '%s://%s' % (
@@ -189,3 +269,25 @@ def get_base_url(request):
             RequestSite(request).domain
         )
     )
+
+
+def prepare_vidly_video_url(url):
+    """Return the URL prepared for Vid.ly
+    See # See http://help.encoding.com/knowledge-base/article/\
+    save-some-time-on-your-encodes/
+
+    Hopefully this will make the transcoding faster.
+    """
+    if 's3.amazonaws.com' in url:
+        if '?' in url:
+            url += '&'
+        else:
+            url += '?'
+        url += 'nocopy'
+    return url
+
+
+def build_absolute_url(uri):
+    site = Site.objects.get_current()
+    base = 'https://%s' % site.domain  # yuck!
+    return urlparse.urljoin(base, uri)

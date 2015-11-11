@@ -12,27 +12,10 @@ from django.core.cache import cache
 
 from airmozilla.main.models import Event, Template, VidlySubmission, Picture
 from airmozilla.manage import videoinfo
-from airmozilla.base.tests.testbase import DjangoTestCase
-
-
-class _Response(object):
-    def __init__(self, content, status_code=200, headers=None):
-        self.content = self.text = content
-        self.status_code = status_code
-        self.headers = headers or {}
-
-    def iter_content(self, chunk_size=1024):
-        increment = 0
-        while True:
-            chunk = self.content[increment: increment + chunk_size]
-            increment += chunk_size
-            if not chunk:
-                break
-            yield chunk
+from airmozilla.base.tests.testbase import DjangoTestCase, Response
 
 
 class TestVideoinfo(DjangoTestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
     sample_jpg = 'airmozilla/manage/tests/presenting.jpg'
     sample_jpg2 = 'airmozilla/manage/tests/tucker.jpg'
 
@@ -77,7 +60,7 @@ class TestVideoinfo(DjangoTestCase):
         p_urllib2.urlopen = mocked_urlopen
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '',
                 200
             )
@@ -137,6 +120,38 @@ class TestVideoinfo(DjangoTestCase):
         event = Event.objects.get(id=event.id)
         eq_(event.duration, 1157)
 
+    @mock.patch('requests.head')
+    @mock.patch('subprocess.Popen')
+    def test_fetch_duration_oserror(self, mock_popen, rhead):
+
+        def mocked_head(url, **options):
+            return Response(
+                '',
+                200
+            )
+
+        rhead.side_effect = mocked_head
+
+        def mocked_popen(command, **kwargs):
+
+            class Inner:
+                def communicate(self):
+                    raise OSError('Something Bad')
+
+            return Inner()
+
+        mock_popen.side_effect = mocked_popen
+
+        event = Event.objects.get(title='Test event')
+        video_url = 'https://example.com/file.mov'
+        try:
+            videoinfo.fetch_duration(event, video_url=video_url)
+            raise AssertionError("not supposed to happen")
+        except OSError as exception:
+            message = str(exception)
+            ok_('Something Bad' in message)
+            ok_('ffmpeg -i %s' % video_url in message)
+
     @mock.patch('airmozilla.manage.vidly.logging')
     @mock.patch('airmozilla.manage.vidly.urllib2')
     @mock.patch('requests.head')
@@ -161,7 +176,7 @@ class TestVideoinfo(DjangoTestCase):
         p_urllib2.urlopen = mocked_urlopen
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '',
                 200
             )
@@ -224,7 +239,7 @@ class TestVideoinfo(DjangoTestCase):
     ):
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 'Not Found',
                 404
             )
@@ -261,7 +276,7 @@ class TestVideoinfo(DjangoTestCase):
     ):
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '<html>',
                 200,
                 headers={
@@ -292,8 +307,8 @@ class TestVideoinfo(DjangoTestCase):
         eq_(event.duration, None)  # because it failed
         output = buffer.getvalue()
         ok_(
-            'https://vid.ly/abc123?content=video&format=mp4 is a '
-            'text/html document' in output
+            '{0}/abc123?content=video&format=mp4 is a '
+            'text/html document'.format(settings.VIDLY_BASE_URL) in output
         )
 
     @mock.patch('airmozilla.manage.vidly.logging')
@@ -304,7 +319,7 @@ class TestVideoinfo(DjangoTestCase):
     ):
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '<html>',
                 200,
                 headers={
@@ -335,8 +350,8 @@ class TestVideoinfo(DjangoTestCase):
         eq_(event.duration, None)  # because it failed
         output = buffer.getvalue()
         ok_(
-            'https://vid.ly/abc123?content=video&format=mp4 has a 0 byte '
-            'Content-Length' in output
+            '{0}/abc123?content=video&format=mp4 has a 0 byte '
+            'Content-Length'.format(settings.VIDLY_BASE_URL) in output
         )
 
     @mock.patch('airmozilla.manage.vidly.logging')
@@ -365,11 +380,11 @@ class TestVideoinfo(DjangoTestCase):
 
         def mocked_head(url, **options):
             if 'file.mpg' in url:
-                return _Response(
+                return Response(
                     '',
                     200
                 )
-            return _Response(
+            return Response(
                 '',
                 302,
                 headers={
@@ -380,7 +395,7 @@ class TestVideoinfo(DjangoTestCase):
         rhead.side_effect = mocked_head
 
         def mocked_get(url, **options):
-            return _Response(
+            return Response(
                 '0' * 100000,
                 200,
                 headers={
@@ -483,11 +498,11 @@ class TestVideoinfo(DjangoTestCase):
         def mocked_head(url, **options):
             # print "HEAD URL", url
             if 'file.mp4' in url:
-                return _Response(
+                return Response(
                     '',
                     200
                 )
-            return _Response(
+            return Response(
                 '',
                 302,
                 headers={
@@ -499,7 +514,7 @@ class TestVideoinfo(DjangoTestCase):
 
         def mocked_get(url, **options):
             # print "GET URL", url
-            return _Response(
+            return Response(
                 '0' * 100000,
                 200,
                 headers={
@@ -602,11 +617,11 @@ class TestVideoinfo(DjangoTestCase):
         def mocked_head(url, **options):
             # print "HEAD URL", url
             if 'file.mp4' in url:
-                return _Response(
+                return Response(
                     '',
                     200
                 )
-            return _Response(
+            return Response(
                 '',
                 302,
                 headers={
@@ -618,7 +633,7 @@ class TestVideoinfo(DjangoTestCase):
 
         def mocked_get(url, **options):
             # print "GET URL", url
-            return _Response(
+            return Response(
                 '0' * 100000,
                 200,
                 headers={
@@ -688,7 +703,7 @@ class TestVideoinfo(DjangoTestCase):
     ):
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '',
                 200
             )
@@ -752,7 +767,7 @@ class TestVideoinfo(DjangoTestCase):
         p_urllib2.urlopen = mocked_urlopen
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '',
                 200
             )
@@ -811,7 +826,8 @@ class TestVideoinfo(DjangoTestCase):
         event.save()
         videoinfo.fetch_screencaptures()
         assert ffmpeged_urls
-        eq_(Picture.objects.filter(event=event).count(), 15)
+        no_screencaptures = settings.SCREENCAPTURES_NO_PICTURES
+        eq_(Picture.objects.filter(event=event).count(), no_screencaptures)
 
         # When viewed, like it's viewed in the picture gallery and gallery
         # select widget, we want the one called "Screencap 1" to appear
@@ -820,16 +836,100 @@ class TestVideoinfo(DjangoTestCase):
         notes = [x.notes for x in pictures]
         eq_(
             notes,
-            ["Screencap %d" % x for x in range(1, 16)]
+            ["Screencap %d" % x for x in range(1, no_screencaptures + 1)]
         )
 
         # Try to do it again and it shouldn't run it again
         # because there are pictures in the gallery already.
-        assert len(ffmpeged_urls) == 15, len(ffmpeged_urls)
+        assert len(ffmpeged_urls) == no_screencaptures, len(ffmpeged_urls)
         videoinfo.fetch_screencaptures()
-        eq_(len(ffmpeged_urls), 15)
+        eq_(len(ffmpeged_urls), no_screencaptures)
         # and still
-        eq_(Picture.objects.filter(event=event).count(), 15)
+        eq_(Picture.objects.filter(event=event).count(), no_screencaptures)
+
+    @mock.patch('airmozilla.manage.vidly.urllib2')
+    @mock.patch('requests.head')
+    @mock.patch('subprocess.Popen')
+    def test_fetch_screencapture_set_first_available(
+        self, mock_popen, rhead, p_urllib2
+    ):
+        assert Picture.objects.all().count() == 0, Picture.objects.all()
+
+        def mocked_urlopen(request):
+            return StringIO("""
+            <?xml version="1.0"?>
+            <Response>
+              <Message>OK</Message>
+              <MessageCode>7.4</MessageCode>
+              <Success>
+                <MediaShortLink>xxx999</MediaShortLink>
+                <Token>MXCsxINnVtycv6j02ZVIlS4FcWP</Token>
+              </Success>
+            </Response>
+            """)
+
+        p_urllib2.urlopen = mocked_urlopen
+
+        def mocked_head(url, **options):
+            return Response(
+                '',
+                200
+            )
+
+        rhead.side_effect = mocked_head
+
+        ffmpeged_urls = []
+
+        sample_jpg = self.sample_jpg
+        sample_jpg2 = self.sample_jpg2
+
+        def mocked_popen(command, **kwargs):
+            url = command[4]
+            ffmpeged_urls.append(url)
+            destination = command[-1]
+            assert os.path.isdir(os.path.dirname(destination))
+
+            class Inner:
+                def communicate(self):
+                    out = err = ''
+                    if 'xyz123' in url:
+                        if '01.jpg' in destination:
+                            shutil.copyfile(sample_jpg, destination)
+                        else:
+                            shutil.copyfile(sample_jpg2, destination)
+                    else:
+                        raise NotImplementedError(url)
+                    return out, err
+
+            return Inner()
+
+        mock_popen.side_effect = mocked_popen
+
+        event = Event.objects.get(title='Test event')
+        template = Template.objects.create(
+            name='Vid.ly Something',
+            content="{{ tag }}"
+        )
+        event.template = template
+        event.duration = 1157
+        event.save()
+
+        # Make sure it has a HD VidlySubmission
+        VidlySubmission.objects.create(
+            event=event,
+            url='https://s3.com/asomething.mov',
+            tag='xyz123',
+            hd=True,
+        )
+        event.template_environment = {'tag': 'xyz123'}
+        event.save()
+        videoinfo.fetch_screencapture(event, set_first_available=True)
+        assert ffmpeged_urls
+        no_screencaptures = settings.SCREENCAPTURES_NO_PICTURES
+        pictures = Picture.objects.filter(event=event)
+        eq_(pictures.count(), no_screencaptures)
+        event = Event.objects.get(id=event.id)
+        eq_(event.picture, pictures.order_by('created')[0])
 
     @mock.patch('airmozilla.manage.vidly.logging')
     @mock.patch('airmozilla.manage.vidly.urllib2')
@@ -857,7 +957,7 @@ class TestVideoinfo(DjangoTestCase):
         p_urllib2.urlopen = mocked_urlopen
 
         def mocked_head(url, **options):
-            return _Response(
+            return Response(
                 '',
                 200
             )
@@ -923,11 +1023,108 @@ class TestVideoinfo(DjangoTestCase):
         directory_name = '%s_%s' % (event.id, event.slug)
         event_temp_dir = os.path.join(temp_dir, directory_name)
         ok_(os.path.isdir(event_temp_dir))
-        # there should be 2 JPEGs in there
+        # there should be X JPEGs in there
+        no_screencaptures = settings.SCREENCAPTURES_NO_PICTURES
         eq_(
             sorted(os.listdir(event_temp_dir)),
-            ["screencap-%02d.jpg" % x for x in range(1, 16)]
+            ["screencap-%02d.jpg" % x for x in range(1, no_screencaptures + 1)]
         )
+
+    @mock.patch('airmozilla.manage.vidly.logging')
+    @mock.patch('airmozilla.manage.vidly.urllib2')
+    @mock.patch('requests.head')
+    @mock.patch('subprocess.Popen')
+    def test_fetch_screencapture_import_immediately(
+        self, mock_popen, rhead, p_urllib2, p_log
+    ):
+        """This test is effectively the same as test_fetch_screencapture()
+        but with `import_immediately=True` set.
+        """
+        def mocked_urlopen(request):
+            return StringIO("""
+            <?xml version="1.0"?>
+            <Response>
+              <Message>OK</Message>
+              <MessageCode>7.4</MessageCode>
+              <Success>
+                <MediaShortLink>xxx999</MediaShortLink>
+                <Token>MXCsxINnVtycv6j02ZVIlS4FcWP</Token>
+              </Success>
+            </Response>
+            """)
+
+        p_urllib2.urlopen = mocked_urlopen
+
+        def mocked_head(url, **options):
+            return Response(
+                '',
+                200
+            )
+
+        rhead.side_effect = mocked_head
+
+        ffmpeged_urls = []
+
+        sample_jpg = self.sample_jpg
+        sample_jpg2 = self.sample_jpg2
+
+        def mocked_popen(command, **kwargs):
+            url = command[4]
+            ffmpeged_urls.append(url)
+            destination = command[-1]
+            assert os.path.isdir(os.path.dirname(destination))
+
+            class Inner:
+                def communicate(self):
+                    out = err = ''
+                    if 'xyz123' in url:
+                        # Let's create two jpeg's in that directory
+                        if '01.jpg' in destination:
+                            shutil.copyfile(sample_jpg, destination)
+                        else:
+                            shutil.copyfile(sample_jpg2, destination)
+                    else:
+                        raise NotImplementedError(url)
+                    return out, err
+
+            return Inner()
+
+        mock_popen.side_effect = mocked_popen
+
+        event = Event.objects.get(title='Test event')
+        template = Template.objects.create(
+            name='Vid.ly Something',
+            content="{{ tag }}"
+        )
+        event.duration = 1157
+        event.template = template
+        event.save()
+
+        # Make sure it has a HD VidlySubmission
+        VidlySubmission.objects.create(
+            event=event,
+            url='https://s3.com/asomething.mov',
+            tag='xyz123',
+            hd=True,
+        )
+        event.template_environment = {'tag': 'xyz123'}
+        event.save()
+        videoinfo.fetch_screencaptures(import_immediately=True)
+        assert ffmpeged_urls
+        eq_(
+            Picture.objects.filter(event=event).count(),
+            settings.SCREENCAPTURES_NO_PICTURES
+        )
+
+        # there should now be some JPEGs in the dedicated temp directory
+        temp_dir = os.path.join(
+            tempfile.gettempdir(),
+            settings.SCREENCAPTURES_TEMP_DIRECTORY_NAME
+        )
+        # expect there to be a directory with the event's ID
+        directory_name = '%s_%s' % (event.id, event.slug)
+        event_temp_dir = os.path.join(temp_dir, directory_name)
+        ok_(not os.path.isdir(event_temp_dir))
 
     def test_import_screencaptures_empty(self):
         """it should be possible to run this at any time, even if

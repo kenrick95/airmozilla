@@ -3,6 +3,8 @@ import cgi
 import datetime
 import json
 import urllib
+import os
+import shutil
 from cStringIO import StringIO
 
 from nose.tools import eq_, ok_
@@ -11,13 +13,11 @@ import pyquery
 
 from django.conf import settings
 from django.contrib.auth.models import User, Group, Permission
-from django.contrib.flatpages.models import FlatPage
 from django.core import mail
 from django.utils import timezone
 from django.utils.timezone import utc
 from django.core.files import File
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -49,6 +49,7 @@ from airmozilla.manage.tests.test_vidly import (
     SAMPLE_MEDIA_UPDATE_FAILED_XML,
     SAMPLE_MEDIA_UPDATED_XML,
 )
+from airmozilla.staticpages.models import StaticPage
 from airmozilla.manage.views.events import is_privacy_vidly_mismatch
 from .base import ManageTestCase
 
@@ -69,6 +70,7 @@ class TestEvents(ManageTestCase):
         'tags': 'xxx',
         'template': '1',
         'start_time': '2012-3-4 12:00',
+        'estimated_duration': '3600',
     }
     placeholder = 'airmozilla/manage/tests/firefox.png'
 
@@ -104,7 +106,7 @@ class TestEvents(ManageTestCase):
         self.assertRedirects(response_cancel, reverse('manage:events'))
 
     def test_event_request_with_approvals(self):
-        group1, = Group.objects.all()
+        group1 = Group.objects.create(name='testapprover')
         group2 = Group.objects.create(name='Group2')
         permission = Permission.objects.get(codename='change_approval')
         group1.permissions.add(permission)
@@ -184,6 +186,28 @@ class TestEvents(ManageTestCase):
         response = self.client.get(reverse('manage:events'))
         eq_(response.status_code, 200)
 
+    def test_events_with_basic_filtering(self):
+        event = Event.objects.get(title='Test event')
+        response = self.client.get(reverse('manage:events_data'))
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        eq_(results['events'][0]['id'], event.id)
+
+        event.status = Event.STATUS_PENDING
+        event.save()
+        response = self.client.get(reverse('manage:events_data'))
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        # still there
+        eq_(results['events'][0]['id'], event.id)
+
+        event.status = Event.STATUS_INITIATED
+        event.save()
+        response = self.client.get(reverse('manage:events_data'))
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        ok_(not results['events'])
+
     def test_events_with_event_without_location(self):
         event = Event.objects.get(title='Test event')
         response = self.client.get(reverse('manage:events_data'))
@@ -215,6 +239,47 @@ class TestEvents(ManageTestCase):
         results = json.loads(response.content)
         result = results['events'][0]
         eq_(result['popcorn_url'], event.popcorn_url)
+
+    def test_events_data_with_latest_modify_date(self):
+        event = Event.objects.get(title='Test event')
+        response = self.client.get(reverse('manage:events_data'))
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        ok_(results['events'])
+        eq_(results['max_modified'], event.modified.isoformat())
+        first, = results['events']
+        eq_(first['modified'], results['max_modified'])
+
+    def test_events_data_since(self):
+        url = reverse('manage:events_data')
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        ok_(results['events'])
+
+        response = self.client.get(url, {
+            'since': 'junk'
+        })
+        eq_(response.status_code, 400)
+
+        response = self.client.get(url, {
+            'since': results['max_modified']
+        })
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        ok_(not results['events'])
+        ok_(not results['max_modified'])
+
+        # go back a second in time
+        event = Event.objects.get(title='Test event')
+        max_modified = event.modified - datetime.timedelta(seconds=1)
+        response = self.client.get(url, {
+            'since': max_modified,
+        })
+        eq_(response.status_code, 200)
+        results = json.loads(response.content)
+        ok_(results['events'])
+        eq_(results['max_modified'], event.modified.isoformat())
 
     def test_events_data_with_pictures_count(self):
         event = Event.objects.get(title='Test event')
@@ -272,6 +337,7 @@ class TestEvents(ManageTestCase):
             privacy=Event.PRIVACY_PUBLIC,
             placeholder_img=event.placeholder_img,
             location=event.location,
+            status=Event.STATUS_PENDING,
         )
         Event.objects.create(
             title='MoCo Only Event',
@@ -281,6 +347,7 @@ class TestEvents(ManageTestCase):
             privacy=Event.PRIVACY_PUBLIC,
             placeholder_img=event.placeholder_img,
             location=event.location,
+            status=Event.STATUS_PENDING,
         )
         url = reverse('manage:events_data')
         response = self.client.get(url)
@@ -412,6 +479,7 @@ class TestEvents(ManageTestCase):
             privacy=Event.PRIVACY_CONTRIBUTORS,
             placeholder_img=event.placeholder_img,
             location=event.location,
+            status=Event.STATUS_SCHEDULED,
         )
         event3 = Event.objects.create(
             title='MoCo Only Event',
@@ -421,6 +489,7 @@ class TestEvents(ManageTestCase):
             privacy=Event.PRIVACY_COMPANY,
             placeholder_img=event.placeholder_img,
             location=event.location,
+            status=Event.STATUS_SCHEDULED,
         )
         response = self.client.get(reverse('manage:events_data'))
         eq_(response.status_code, 200)
@@ -602,12 +671,9 @@ class TestEvents(ManageTestCase):
         self.assertRedirects(response_ok, reverse('manage:events'))
         event_modified = Event.objects.get(id=event.id)
         eq_(event_modified.status, Event.STATUS_SCHEDULED)
-        now = (
-            timezone.now()
-        )
+        now = timezone.now()
         ok_(
-            abs(event_modified.archive_time - now)
-            <=
+            abs(event_modified.archive_time - now) <=
             datetime.timedelta(1)
         )
 
@@ -770,6 +836,7 @@ class TestEvents(ManageTestCase):
             'privacy': event.privacy,
             'status': event.status,
             'start_time': event.start_time.strftime('%Y-%m-%d %H:%M'),
+            'estimated_duration': event.estimated_duration,
             'channels': [x.pk for x in event.channels.all()],
             'enable_discussion': True,
         }
@@ -805,6 +872,7 @@ class TestEvents(ManageTestCase):
             'privacy': event.privacy,
             'status': event.status,
             'start_time': event.start_time.strftime('%Y-%m-%d %H:%M'),
+            'estimated_duration': event.estimated_duration,
             'channels': [x.pk for x in event.channels.all()],
             'enable_discussion': True,
             'curated_groups': 'badasses'
@@ -834,6 +902,7 @@ class TestEvents(ManageTestCase):
             'privacy': event.privacy,
             'status': event.status,
             'start_time': event.start_time.strftime('%Y-%m-%d %H:%M'),
+            'estimated_duration': event.estimated_duration,
             'channels': [x.pk for x in event.channels.all()],
             'enable_discussion': True,
             'picture': picture.id,
@@ -1199,6 +1268,34 @@ class TestEvents(ManageTestCase):
         eq_(response.status_code, 302)
         self.assertRedirects(response, url)
 
+    def test_editing_event_without_location(self):
+        # Edit an event that doesn't have a location, and keep it that way.
+        # It should not affect the start_time.
+        event = Event.objects.get(title='Test event')
+        event.location = None
+        event.save()
+        start_time_before = event.start_time
+        url = reverse('manage:event_edit', args=(event.id,))
+        response = self.client.post(url, {
+            'title': event.title,
+            'description': event.description,
+            'short_description': event.short_description,
+            'location': '',
+            'status': event.status,
+            'slug': event.slug,
+            'start_time': event.start_time.strftime('%Y-%m-%d %H:%M'),
+            'channels': [x.id for x in event.channels.all()],
+            'tags': [x.id for x in event.tags.all()],
+            'estimated_duration': event.estimated_duration,
+            'privacy': event.privacy,
+        })
+        eq_(response.status_code, 302)
+
+        # reload and check the start_time
+        event = Event.objects.get(id=event.id)
+        start_time_after = event.start_time
+        eq_(start_time_before, start_time_after)
+
     def test_editing_event_tags(self):
         # you create an event, edit the tags and mix the case
         with open(self.placeholder) as fp:
@@ -1234,8 +1331,8 @@ class TestEvents(ManageTestCase):
         count_tags_after = Tag.objects.all().count()
         eq_(count_tags_before, count_tags_after)
 
-    def test_event_request_with_clashing_flatpage(self):
-        FlatPage.objects.create(
+    def test_event_request_with_clashing_staticpage(self):
+        StaticPage.objects.create(
             url='/egg-plants/',
             title='Egg Plants',
         )
@@ -1248,9 +1345,9 @@ class TestEvents(ManageTestCase):
             eq_(response.status_code, 200)
             ok_('Form errors' in response.content)
 
-    def test_event_edit_with_clashing_flatpage(self):
+    def test_event_edit_with_clashing_staticpage(self):
         # if you edit the event and its slug already clashes with a
-        # FlatPage, there's little we can do, the FlatPage was added
+        # StaticPage, there's little we can do, the StaticPage was added
         # after
         with open(self.placeholder) as fp:
             response = self.client.post(
@@ -1260,7 +1357,7 @@ class TestEvents(ManageTestCase):
             )
             eq_(response.status_code, 302)
 
-        FlatPage.objects.create(
+        StaticPage.objects.create(
             url='/egg-plants/',
             title='Egg Plants',
         )
@@ -2019,7 +2116,7 @@ class TestEvents(ManageTestCase):
 
         # reload the event and it should have changed status
         event = Event.objects.get(pk=event.pk)
-        eq_(event.status, Event.STATUS_PENDING)
+        eq_(event.status, Event.STATUS_PROCESSING)
 
     def test_event_redirect_thumbnail(self):
         event = Event.objects.get(title='Test event')
@@ -2040,7 +2137,7 @@ class TestEvents(ManageTestCase):
         url = reverse('manage:event_edit', args=(event.id,))
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_('Total Hits:' not in response.content)
+        ok_('Archived hits:' not in response.content)
 
         event.template_environment = {'tag': 'abc123'}
         event.save()
@@ -2053,7 +2150,7 @@ class TestEvents(ManageTestCase):
 
         response = self.client.get(url)
         eq_(response.status_code, 200)
-        ok_('Total Hits:' in response.content)
+        ok_('Archived hits:' in response.content)
         ok_('1,234' in response.content)
 
     @mock.patch('airmozilla.manage.vidly.urllib2')
@@ -2186,3 +2283,348 @@ class TestEvents(ManageTestCase):
         submission = VidlySubmission.objects.get(id=submission.id)
         # it should not have changed
         ok_(not submission.token_protection)
+
+    def test_edit_event_archive_time(self):
+        event = Event.objects.get(title='Test event')
+        url = reverse('manage:event_archive_time', args=(event.id,))
+        assert event.archive_time
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_(event.get_status_display() in response.content)
+        # the input converts the time to the local timezone of
+        ok_(
+            event.archive_time.strftime('%Y-%m-%d %H:%M:%S') in
+            response.content
+        )
+        response = self.client.post(url, {
+            'archive_time': ''
+        })
+        eq_(response.status_code, 302)
+        event = Event.objects.get(id=event.id)
+        eq_(event.archive_time, None)
+
+        response = self.client.post(url, {
+            'archive_time': '2015-04-01 12:00:00'
+        })
+        eq_(response.status_code, 302)
+        event = Event.objects.get(id=event.id)
+        dt = datetime.datetime(2015, 4, 1, 12, 0, 0)
+        dt = dt.replace(tzinfo=utc)
+        eq_(event.archive_time, dt)
+
+    @mock.patch('airmozilla.manage.views.events.boto.connect_s3')
+    @mock.patch('airmozilla.manage.vidly.urllib2')
+    def test_event_delete(self, p_urllib2, mocked_connect_s3):
+
+        assert not Upload.objects.all()
+        assert not VidlySubmission.objects.all()
+        assert not Picture.objects.all()
+
+        def mocked_urlopen(request):
+            return StringIO("""
+            <?xml version="1.0"?>
+            <Response>
+              <Message>Success</Message>
+              <MessageCode>0.0</MessageCode>
+              <Success>
+                <MediaShortLink>8oxv6x</MediaShortLink>
+              </Success>
+              <Errors>
+                <Error>
+                  <SourceFile>http://www.com</SourceFile>
+                  <ErrorCode>1</ErrorCode>
+                  <Description>ErrorDescriptionK</Description>
+                  <Suggestion>ErrorSuggestionK</Suggestion>
+                </Error>
+              </Errors>
+            </Response>
+            """)
+
+        sent_xml_strings = []
+
+        def mocked_Request(url, data, **kwargs):
+            sent_xml_strings.append(urllib.unquote_plus(data))
+            return mock.MagicMock()
+
+        p_urllib2.Request = mocked_Request
+        p_urllib2.urlopen = mocked_urlopen
+
+        event = Event.objects.get(title='Test event')
+        url = reverse('manage:event_delete', args=(event.id,))
+        response = self.client.post(url)
+        # because the event is not in state of removed
+        eq_(response.status_code, 404)
+        event.status = Event.STATUS_REMOVED
+        event.save()
+
+        # create some uploads
+        Upload.objects.create(
+            user=self.user,
+            event=event,
+            url='http://aws.com/file1.mov',
+            size=98765
+        )
+        Upload.objects.create(
+            user=self.user,
+            event=event,
+            url='http://aws.com/file2.mov',
+            size=123456
+        )
+
+        # create some vidly submissions
+        VidlySubmission.objects.create(
+            event=event,
+            tag='abc123',
+        )
+        VidlySubmission.objects.create(
+            event=event,
+            tag='xyz987',
+        )
+
+        # Create some pictures
+        file_paths = []
+        for i in range(3):
+            with open(self.placeholder) as fp:
+                picture = Picture.objects.create(
+                    event=event,
+                    file=File(fp),
+                    notes=str(i)
+                )
+                assert os.path.isfile(picture.file.path)
+                file_paths.append(picture.file.path)
+        # associate the event with the last picture
+        event.picture = picture
+        event.save()
+
+        # finally, try to delete it again
+        response = self.client.post(url)
+        eq_(response.status_code, 302)
+
+        mocked_connect_s3().get_bucket.assert_called_once_with(
+            settings.S3_UPLOAD_BUCKET
+        )
+        mocked_connect_s3().get_bucket().delete_key.assert_any_call(
+            '/file2.mov'
+        )
+        mocked_connect_s3().get_bucket().delete_key.assert_any_call(
+            '/file1.mov'
+        )
+
+        eq_(len(sent_xml_strings), 2)
+        ok_('<Action>DeleteMedia</Action>' in sent_xml_strings[0])
+        ok_('<Action>DeleteMedia</Action>' in sent_xml_strings[1])
+        ok_('<MediaShortLink>xyz987</MediaShortLink>' in sent_xml_strings[0])
+        ok_('<MediaShortLink>abc123</MediaShortLink>' in sent_xml_strings[1])
+
+        for file_path in file_paths:
+            ok_(not os.path.isfile(file_path))
+
+        # We can do this because there weren't any of these before the
+        # test started.
+        ok_(not Upload.objects.all())
+        ok_(not VidlySubmission.objects.all())
+        ok_(not Picture.objects.all())
+
+    @mock.patch('requests.head')
+    @mock.patch('subprocess.Popen')
+    def test_event_fetch_duration(self, mock_popen, rhead):
+
+        ffmpeged_urls = []
+
+        def mocked_popen(command, **kwargs):
+            url = destination = None
+            if command[1] == '-i':
+                # doing a fetch info
+                url = command[2]
+            elif command[1] == '-ss':
+                # screen capturing
+                destination = command[-1]
+                assert os.path.isdir(os.path.dirname(destination))
+            else:
+                raise NotImplementedError(command)
+
+            ffmpeged_urls.append(url)
+
+            # sample_jpg = self.sample_jpg
+
+            class Inner:
+                def communicate(self):
+                    out = err = ''
+                    if url is not None:
+                        if 'some.flv' in url:
+                            err = """
+                Duration: 00:00:11.01, start: 0.000000, bitrate: 1076 kb/s
+                            """
+                        else:
+                            raise NotImplementedError(url)
+                    # elif destination is not None:
+                    #     shutil.copyfile(sample_jpg, destination)
+                    else:
+                        raise NotImplementedError()
+                    return out, err
+
+            return Inner()
+
+        mock_popen.side_effect = mocked_popen
+
+        def mocked_head(url, **options):
+            return Response(
+                '',
+                200
+            )
+
+        rhead.side_effect = mocked_head
+
+        event = Event.objects.get(title='Test event')
+        assert not event.duration
+        url = reverse('manage:event_fetch_duration', args=(event.id,))
+        eq_(self.client.get(url).status_code, 405)
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {'duration': None})
+
+        event.upload = Upload.objects.create(
+            user=self.user,
+            url='http://s3domaincom/some.flv',
+            size=12345
+        )
+        event.save()
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {'duration': 11})
+        event = Event.objects.get(id=event.id)
+        eq_(event.duration, 11)
+
+        eq_(len(ffmpeged_urls), 1)
+
+        # hit it a second time
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {'duration': 11})
+        eq_(len(ffmpeged_urls), 1)
+
+    @mock.patch('requests.head')
+    @mock.patch('subprocess.Popen')
+    def test_event_fetch_screencaptures(self, mock_popen, rhead):
+
+        ffmpeged_urls = []
+
+        def mocked_popen(command, **kwargs):
+            url = destination = None
+            if command[1] == '-ss':
+                # screen capturing
+                destination = command[-1]
+                assert os.path.isdir(os.path.dirname(destination))
+            else:
+                raise NotImplementedError(command)
+
+            ffmpeged_urls.append(url)
+
+            sample_jpg = 'airmozilla/manage/tests/presenting.jpg'
+
+            class Inner:
+                def communicate(self):
+                    out = err = ''
+                    if destination is not None:
+                        shutil.copyfile(sample_jpg, destination)
+                    else:
+                        raise NotImplementedError()
+                    return out, err
+
+            return Inner()
+
+        mock_popen.side_effect = mocked_popen
+
+        def mocked_head(url, **options):
+            return Response(
+                '',
+                200
+            )
+
+        rhead.side_effect = mocked_head
+
+        event = Event.objects.get(title='Test event')
+        assert not event.duration
+        url = reverse('manage:event_fetch_screencaptures', args=(event.id,))
+        eq_(self.client.get(url).status_code, 405)
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {'pictures': 0})
+
+        event.upload = Upload.objects.create(
+            user=self.user,
+            url='http://s3domaincom/some.flv',
+            size=12345
+        )
+        event.save()
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {'pictures': 0})
+
+        event.duration = 12
+        event.save()
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {
+            'pictures': settings.SCREENCAPTURES_NO_PICTURES
+        })
+        assert Picture.objects.filter(event=event).count()
+        eq_(len(ffmpeged_urls), settings.SCREENCAPTURES_NO_PICTURES)
+
+        # hit it a second time
+        response = self.client.post(url)
+        eq_(response.status_code, 200)
+        eq_(json.loads(response.content), {
+            'pictures': settings.SCREENCAPTURES_NO_PICTURES
+        })
+        eq_(len(ffmpeged_urls), settings.SCREENCAPTURES_NO_PICTURES)
+
+    @mock.patch('subprocess.Popen')
+    @mock.patch('requests.head')
+    def test_event_edit_duration(self, rhead, rpopen):
+
+        def mocked_head(url, **options):
+            return Response(
+                '',
+                200
+            )
+
+        rhead.side_effect = mocked_head
+
+        def mocked_popen(command, **kwargs):
+            url = command[2]
+
+            class Inner:
+                def communicate(self):
+                    out = ''
+                    if 'xyz123' in url:
+                        err = """
+            Duration: 00:05:20.47, start: 0.000000, bitrate: 1076 kb/s
+                        """
+                    else:
+                        raise NotImplementedError(url)
+                    return out, err
+
+            return Inner()
+
+        rpopen.side_effect = mocked_popen
+
+        event = Event.objects.get(title='Test event')
+        event.duration = 120
+        event.template_environment = {'tag': 'xyz123'}
+        event.save()
+        event.template.name = 'Vid.ly Whatever'
+        event.template.save()
+        url = reverse('manage:event_edit_duration', args=(event.id,))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('2 minutes' in response.content)
+        # let's change it to something else
+        response = self.client.post(url, {'duration': 120 + 60})
+        eq_(response.status_code, 302)
+        eq_(Event.objects.get(id=event.id).duration, 120 + 60)
+
+        # let's unset it
+        response = self.client.post(url, {'duration': ''})
+        eq_(response.status_code, 302)
+        eq_(Event.objects.get(id=event.id).duration, 60 * 5 + 20)

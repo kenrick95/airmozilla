@@ -21,14 +21,17 @@ venv_path = '../venv'
 def update_code(ctx, tag):
     """Update the code to a specific git reference (tag/sha/etc)."""
     with ctx.lcd(settings.SRC_DIR):
-        ctx.local('git checkout %s' % tag)
-        ctx.local('git pull -f')
+        ctx.local('git fetch')
+        ctx.local('git checkout -f %s' % tag)
         ctx.local("find . -type f -name '*.pyc' -delete")
         # Creating a virtualenv tries to open virtualenv/bin/python for
         # writing, but because virtualenv is using it, it fails.
         # So we delete it and let virtualenv create a new one.
-        ctx.local('rm -f %s/bin/python' % venv_path)
-        ctx.local('virtualenv %s' % venv_path)
+        ctx.local('rm -f %s/bin/python %s/bin/python2.7' % (
+            venv_path,
+            venv_path,
+        ))
+        ctx.local('virtualenv-2.7 %s' % venv_path)
 
         # Activate virtualenv to append to path.
         activate_env = os.path.join(
@@ -36,9 +39,9 @@ def update_code(ctx, tag):
         )
         execfile(activate_env, dict(__file__=activate_env))
 
-        ctx.local('%s/bin/pip install bin/peep-2.1.1.tar.gz' % venv_path)
+        ctx.local('%s/bin/pip install bin/peep-2.4.1.tar.gz' % venv_path)
         ctx.local('%s/bin/peep install -r requirements.txt' % venv_path)
-        ctx.local('virtualenv --relocatable %s' % venv_path)
+        ctx.local('virtualenv-2.7 --relocatable %s' % venv_path)
 
 
 @task
@@ -55,29 +58,7 @@ def update_db(ctx):
 
     with ctx.lcd(settings.SRC_DIR):
         ctx.local(
-            '%s/bin/python manage.py syncdb' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate --delete-ghost-migrations '
-            '--noinput airmozilla.main' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate airmozilla.comments' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate airmozilla.uploads' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate airmozilla.subtitles' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate airmozilla.search' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate airmozilla.surveys' % venv_path
-        )
-        ctx.local(
-            '%s/bin/python manage.py migrate airmozilla.cronlogger' % venv_path
+            '%s/bin/python manage.py migrate --noinput' % venv_path
         )
 
 
@@ -153,7 +134,7 @@ def deploy(ctx):
     install_cron()
     checkin_changes()
     deploy_app()
-    # update_celery()
+    update_celery()
     update_info()
 
 

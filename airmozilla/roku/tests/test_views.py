@@ -3,8 +3,8 @@ import datetime
 from django.conf import settings
 from django.utils import timezone
 from django.core.files import File
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
 
 from airmozilla.main.models import (
@@ -13,6 +13,7 @@ from airmozilla.main.models import (
     Template,
     Picture,
     EventHitStats,
+    Approval,
 )
 from airmozilla.base.tests.testbase import DjangoTestCase
 
@@ -21,8 +22,6 @@ class TestRoku(DjangoTestCase):
     """These tests are deliberately very UN-thorough.
     That's because this whole app is very much an experiment.
     """
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
-    main_image = 'airmozilla/manage/tests/firefox.png'
 
     def test_categories_feed(self):
         url = reverse('roku:categories_feed')
@@ -44,6 +43,7 @@ class TestRoku(DjangoTestCase):
 
         now = timezone.now()
         event.start_time = now - datetime.timedelta(seconds=3600)
+        event.archive_time = None
         event.save()
         assert not event.archive_time
         assert event in Event.objects.live()
@@ -81,6 +81,24 @@ class TestRoku(DjangoTestCase):
         event.template = vidly
         event.template_environment = {'tag': 'xyz123'}
         event.save()
+        response = self.client.get(main_url)
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
+
+        # if the *needs* approval, it shouldn't appear
+        app = Approval.objects.create(event=event)
+        response = self.client.get(main_url)
+        eq_(response.status_code, 200)
+        ok_(event.title not in response.content)
+
+        app.processed = True
+        app.save()
+        response = self.client.get(main_url)
+        eq_(response.status_code, 200)
+        ok_(event.title not in response.content)
+
+        app.approved = True
+        app.save()
         response = self.client.get(main_url)
         eq_(response.status_code, 200)
         ok_(event.title in response.content)

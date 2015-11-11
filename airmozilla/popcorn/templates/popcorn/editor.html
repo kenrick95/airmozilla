@@ -1,0 +1,33 @@
+{% extends 'main/main_base.html' %}
+
+{% block site_css %}
+{{ super() }}
+{% compress css %}
+<link href="{{ static('main/css/event.css') }}" rel="stylesheet" type="text/css">
+<link href="{{ static('popcorn/css/editor.css') }}" rel="stylesheet" type="text/css">
+{% endcompress %}
+{% endblock %}
+
+{% block site_js %}
+{{ super() }}
+{% compress js %}
+<script src="{{ static('popcorn/PopcornEditor/src/PopcornEditor.js') }}"></script>
+<script src="{{ static('popcorn/js/editor.js') }}"></script>
+{% endcompress %}
+{% endblock %}
+
+{% block page_title %}
+Popcorn Editor | {{ super() }}
+{% endblock %}
+
+{% block content_main %}{% endblock %}
+
+{% block full_width_content %}
+<div id="editor"
+     data-slug="{{ slug }}"
+     data-url="{{ url('popcorn:popcorn_data') }}"
+     data-save="{{ url('popcorn:save_edit') }}">{{ csrf() }}</div>
+{% endblock %}
+
+{% block sidebar%}
+{% endblock %}

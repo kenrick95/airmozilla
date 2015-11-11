@@ -1,5 +1,5 @@
-{% extends 'main/event.html' %}
-
+{% extends 'main/main_base.html' %}
+{% set page='explore' %}
 {% block page_title %}
 Editing {{ event.title }} | Air Mozilla
 {% endblock %}
@@ -28,6 +28,8 @@ Editing {{ event.title }} | Air Mozilla
   <script src="{{ static('main/js/edit.js') }}"></script>
   {% endcompress %}
 {% endblock %}
+
+{% block sidebar %}{% endblock %}
 
 {% block content_main %}
   <article id="event-{{ event.id }}" class="post type-post status-publish format-standard hentry no-author no-comments">

@@ -2,8 +2,7 @@ from django.contrib.sites.models import RequestSite
 from django.shortcuts import render
 from django.conf import settings
 from django.db.models import Q
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Channel, Event
 from airmozilla.main.views import is_contributor
@@ -27,8 +26,8 @@ def categories_feed(request):
     else:
         privacy_filter = {'privacy': Event.PRIVACY_PUBLIC}
         # feed_privacy = 'public'
-    events = Event.objects.filter(status=Event.STATUS_SCHEDULED)
-    live_events = Event.objects.live()
+    events = Event.objects.scheduled().approved()
+    live_events = Event.objects.live().approved()
     if privacy_filter:
         events = events.filter(**privacy_filter)
         live_events = live_events.filter(**privacy_filter)
@@ -90,11 +89,12 @@ def get_media_info(event):
     elif event.template and 'hls' in event.template.name.lower():
         try:
             file = event.template_environment['file']
+            wowzaapp = event.template_environment.get('wowzaapp') or 'Edgecast'
             return {
                 # it's important to use HTTP here :(
                 'url': (
-                    'http://wowza1.cdn.mozilla.net/Edgecast/ngrp:%s_all'
-                    '/playlist.m3u8' % file
+                    'http://wowza1.cdn.mozilla.net/%s/ngrp:%s_all'
+                    '/playlist.m3u8' % (wowzaapp, file)
                 ),
                 'format': 'hls',
             }
@@ -123,7 +123,7 @@ def channel_feed(request, slug):
         Q(slug=slug) |
         Q(parent__slug=slug)
     )
-    events = Event.objects.archived()
+    events = Event.objects.archived().approved()
     events = events.filter(channels__in=channels)
     privacy_filter = {}
     privacy_exclude = {}

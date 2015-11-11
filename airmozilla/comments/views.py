@@ -3,6 +3,7 @@ import calendar
 from django.contrib.auth.models import User
 from django import http
 from django.shortcuts import get_object_or_404, render, redirect
+from django.views.decorators.cache import never_cache
 from django.template.loader import render_to_string
 from django.db.models import Q, Max
 from django.core.cache import cache
@@ -51,7 +52,7 @@ def can_manage_comments(user, discussion):
 
 
 @json_view
-@transaction.commit_on_success
+@transaction.atomic
 def event_data(request, id):
     event = get_object_or_404(Event, pk=id)
     context = {}
@@ -200,8 +201,8 @@ def event_data(request, id):
     return context
 
 
+@never_cache
 @json_view
-@transaction.commit_on_success
 def event_data_latest(request, id):
     cache_key = 'latest_comment:%s' % (id,)
     include_posted = bool(request.GET.get(
@@ -257,7 +258,7 @@ def user_name(request):
     return {'name': name}
 
 
-@transaction.commit_on_success
+@transaction.atomic
 def unsubscribe(request, identifier, id=None):
     context = {}
     event = discussion = None

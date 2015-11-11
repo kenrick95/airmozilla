@@ -8,11 +8,11 @@ import requests
 
 from django.conf import settings
 from django.utils import timezone
+from django.db.models import Count
 from django.core.exceptions import ImproperlyConfigured
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
-
-from airmozilla.main.models import Event, EventHitStats
+from airmozilla.main.models import Event, EventHitStats, Approval
 
 
 def _get_url():
@@ -62,10 +62,10 @@ def update(
             median_hits = sorted(values)[len(values) / 2]
         else:
             median_hits = 0
-        events = Event.objects.approved()
+        events = Event.objects.scheduled_or_processing()
     else:
         events = (
-            Event.objects.approved()
+            Event.objects.scheduled_or_processing()
             .filter(modified__gte=now-since)[:max_]
         )
         if events:
@@ -83,6 +83,22 @@ def update(
             else:
                 median_hits = 0
 
+    title_counts = {}
+    # Only bother to set this up if there are events to loop over.
+    # Oftentimes the cronjob will trigger here with no new recently changed
+    # events and then the loop below ('for event in events:') will do nothing.
+    if events:
+        grouped_by_title = (
+            Event.objects.all().values('title').annotate(Count('title'))
+        )
+        for each in grouped_by_title:
+            title_counts[each['title']] = each['title__count']
+
+    not_approved = Approval.objects.filter(
+        event__in=events,
+        approved=False,
+    ).values_list('event_id', flat=True)
+
     documents = []
     for event in events:
         url = reverse('main:event', args=(event.slug,))
@@ -95,9 +111,13 @@ def update(
             popularity = hits
         if event.privacy == Event.PRIVACY_PUBLIC:
             group = ''
+            if event.id in not_approved:
+                group = Event.PRIVACY_CONTRIBUTORS
         else:
             group = event.privacy
 
+        if title_counts[title] > 1:
+            title = '%s %s' % (title, event.start_time.strftime('%d %b %Y'))
         documents.append({
             'title': title,
             'url': url,

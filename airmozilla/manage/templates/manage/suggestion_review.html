@@ -59,8 +59,18 @@
         <td>{{ event.start_time|js_date }}</td>
       </tr>
       <tr>
+        <td>Estimated duration</td>
+        <td>
+          {{ show_duration(event.estimated_duration) }}
+        </td>
+      </tr>
+      <tr>
         <td>Location</td>
         <td>{{ event.location }}</td>
+      </tr>
+      <tr>
+        <td>Vidyo room</td>
+        <td>{{ event.call_info }}</td>
       </tr>
       {% elif event.popcorn_url %}
       <tr>
@@ -128,7 +138,7 @@
         <td>Tags</td>
         <td>
           {% for tag in event.tags.all() %}
-            &bull; {{ tag.name }}
+            &bull; {{ tag.name }}<br>
           {% endfor %}
         </td>
       </tr>
@@ -136,7 +146,21 @@
         <td>Channels</td>
         <td>
           {% for channel in event.channels.all() %}
-            &bull; {{ channel.name }}
+            &bull; {{ channel.name }}<br>
+          {% endfor %}
+        </td>
+      </tr>
+      <tr>
+        <td>Topics</td>
+        <td>
+          {% for topic in event.topics.all() %}
+            &bull; {{ topic.topic }}
+            <abbr title="Groups that will require approval if event is public">
+              ({%- for group in topic.groups.all() -%}
+                {{ group.name }}{% if not loop.last %}, {% endif %}
+              {%- endfor %})
+            </abbr>
+            <br>
           {% endfor %}
         </td>
       </tr>
@@ -165,6 +189,12 @@
   {{ real_event_form.errors }}
   {% endif %}
 
+  {% if event.accepted %}
+    <p>
+      Already turned into
+      <a href="{{ url('manage:event_edit', event.accepted.id) }}">an accepted event</a>.
+    </p>
+  {% else %}
   {% if event.submitted %}
   <form method="post" class="form-horizontal">
     {{ csrf() }}
@@ -186,11 +216,20 @@
   </form>
   {% else %}
     <div class="form-actions">
+      {% if event.review_comments %}
+      <p>Last review comment: <i>{{ event.review_comments }}</i></p>
+      <form method="post">
+        {{ csrf() }}
+        <button name="unbounce" value="unbounce" class="btn btn-primary"
+          >Un-bounce to review again</button>
+      </form>
+      {% else %}
       <p>Event is currently not submitted. It was either bounced back or retracted by
       the original submitter.</p>
+      {% endif %}
     </div>
   {% endif %}
-
+  {% endif %}
 
 <div class="comments">
   <h3>Additional comments</h3>

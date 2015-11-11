@@ -28,8 +28,7 @@ def can_edit_event(event, user, default='manage:events'):
     if event.privacy == Event.PRIVACY_COMPANY and is_contributor(user):
         return redirect(default)
     elif (
-        CuratedGroup.objects.filter(event=event)
-        and is_contributor(user)
+        CuratedGroup.objects.filter(event=event) and is_contributor(user)
     ):
         # Editing this event requires that you're also part of that curated
         # group.
@@ -37,10 +36,10 @@ def can_edit_event(event, user, default='manage:events'):
             x[0] for x in
             CuratedGroup.objects.filter(event=event).values_list('name')
         ]
-        if not mozillians.in_groups(
-            user.email,
-            curated_group_names
-        ):
+        any_ = any([
+            mozillians.in_group(user.email, x) for x in curated_group_names
+        ])
+        if not any_:
             return redirect(default)
 
 
@@ -51,6 +50,7 @@ def get_var_templates(template):
     exceptions = (
         'vidly_tokenize',
         'edgecast_tokenize',
+        'akamai_tokenize',
         'popcorn_url',
         'event',
     )

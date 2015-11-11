@@ -1,6 +1,6 @@
 from nose.tools import eq_, ok_
 
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Channel
 
@@ -33,7 +33,8 @@ class TestChannels(ManageTestCase):
                 'name': ' Web Dev ',
                 'slug': 'web-dev',
                 'description': '<h1>Stuff</h1>',
-                'image_is_banner': True
+                'image_is_banner': True,
+                'feed_size': 10,
             }
         )
         self.assertRedirects(response_ok, reverse('manage:channels'))
@@ -54,11 +55,30 @@ class TestChannels(ManageTestCase):
             {
                 'name': 'Different',
                 'slug': 'different',
-                'description': '<p>Other things</p>'
+                'description': '<p>Other things</p>',
+                'feed_size': 10,
             }
         )
         eq_(response.status_code, 302)
         channel = Channel.objects.get(slug='different')
+
+    def test_channel_edit_visibility_clash(self):
+        channel = Channel.objects.get(slug='testing')
+        response = self.client.get(
+            reverse('manage:channel_edit', args=(channel.pk,)),
+        )
+        response = self.client.post(
+            reverse('manage:channel_edit', args=(channel.pk,)),
+            {
+                'name': 'Different',
+                'slug': 'different',
+                'description': '<p>Other things</p>',
+                'never_show': True,
+                'always_show': True,
+                'feed_size': 10,
+            }
+        )
+        eq_(response.status_code, 200)
 
     def test_channel_edit_child(self):
         channel = Channel.objects.get(slug='testing')
@@ -83,6 +103,7 @@ class TestChannels(ManageTestCase):
                 'slug': 'different',
                 'description': '<p>Other things</p>',
                 'parent': main.pk,
+                'feed_size': 10,
             }
         )
         eq_(response.status_code, 302)

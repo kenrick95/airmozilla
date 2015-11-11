@@ -4,8 +4,8 @@ from cStringIO import StringIO
 from nose.tools import eq_, ok_, assert_raises
 import mock
 
-from django.test import TestCase
-
+from airmozilla.base.tests.testbase import DjangoTestCase, Response
+from airmozilla.main.models import Event, VidlySubmission
 from airmozilla.manage import vidly
 
 
@@ -62,6 +62,7 @@ SAMPLE_MEDIALIST_XML = (
     '<Response><Message>OK</Message><MessageCode>7.4</MessageCode><Success>'
     '<Media><MediaShortLink>abc123</MediaShortLink><VanityLink/>'
     '<Notify>vvm@spb-team.com</Notify><Created>2011-12-25 18:45:56</Created>'
+    '<Duration>350.75</Duration>'
     '<Updated>2012-11-28 14:05:07</Updated><Status>Error</Status>'
     '<IsDeleted>false</IsDeleted><IsPrivate>false</IsPrivate>'
     '<IsPrivateCDN>false</IsPrivateCDN><CDN>AWS</CDN></Media>'
@@ -133,12 +134,21 @@ SAMPLE_MEDIA_UPDATE_FAILED_XML = (
 )
 
 
-class TestVidlyTokenize(TestCase):
+class TestVidlyTokenize(DjangoTestCase):
 
-    @mock.patch('airmozilla.manage.vidly.logging')
     @mock.patch('airmozilla.manage.vidly.urllib2')
-    def test_secure_token(self, p_urllib2, p_logging):
+    def test_secure_token(self, p_urllib2):
+
+        event = Event.objects.get(title='Test event')
+        submission = VidlySubmission.objects.create(
+            event=event,
+            tag='xyz123'
+        )
+
+        tokenize_calls = []  # globally scope mutable
+
         def mocked_urlopen(request):
+            tokenize_calls.append(1)
             return StringIO("""
             <?xml version="1.0"?>
             <Response>
@@ -150,9 +160,28 @@ class TestVidlyTokenize(TestCase):
               </Success>
             </Response>
             """)
+
         p_urllib2.urlopen = mocked_urlopen
-        eq_(vidly.tokenize('xyz123', 60),
-            'MXCsxINnVtycv6j02ZVIlS4FcWP')
+        eq_(
+            vidly.tokenize(submission.tag, 60),
+            'MXCsxINnVtycv6j02ZVIlS4FcWP'
+        )
+        eq_(len(tokenize_calls), 1)
+        # do it a second time
+        eq_(
+            vidly.tokenize(submission.tag, 60),
+            'MXCsxINnVtycv6j02ZVIlS4FcWP'
+        )
+        eq_(len(tokenize_calls), 1)  # caching for the win!
+
+        submission.token_protection = True
+        submission.save()
+
+        eq_(
+            vidly.tokenize(submission.tag, 60),
+            'MXCsxINnVtycv6j02ZVIlS4FcWP'
+        )
+        eq_(len(tokenize_calls), 2)  # cache got invalidated
 
     @mock.patch('airmozilla.manage.vidly.logging')
     @mock.patch('airmozilla.manage.vidly.urllib2')
@@ -210,7 +239,7 @@ class TestVidlyTokenize(TestCase):
         )
 
 
-class TestVidlyAddMedia(TestCase):
+class TestVidlyAddMedia(DjangoTestCase):
 
     @mock.patch('airmozilla.manage.vidly.logging')
     @mock.patch('airmozilla.manage.vidly.urllib2')
@@ -322,7 +351,7 @@ class TestVidlyAddMedia(TestCase):
         ok_('0.0' in error)
 
 
-class TestVidlyDeleteMedia(TestCase):
+class TestVidlyDeleteMedia(DjangoTestCase):
 
     @mock.patch('airmozilla.manage.vidly.logging')
     @mock.patch('airmozilla.manage.vidly.urllib2')
@@ -383,7 +412,7 @@ class TestVidlyDeleteMedia(TestCase):
         ok_('1.1' in error)
 
 
-class VidlyTestCase(TestCase):
+class VidlyTestCase(DjangoTestCase):
 
     @mock.patch('urllib2.urlopen')
     def test_query(self, p_urlopen):
@@ -473,4 +502,49 @@ class VidlyTestCase(TestCase):
             vidly.VidlyUpdateError,
             vidly.update_media_protection,
             'abc123', True
+        )
+
+    @mock.patch('requests.head')
+    def test_get_video_redirect_info(self, rhead):
+
+        head_requests = []
+
+        def mocked_head(url):
+            head_requests.append(url)
+            if url == 'http://cdn.vidly/file.mp4':
+                return Response('', 302, headers={
+                    'Content-Type': 'video/mp5',
+                    'Content-Length': '1234567',
+                })
+            else:
+                return Response('', 302, headers={
+                    'Location': 'http://cdn.vidly/file.mp4',
+                })
+
+        rhead.side_effect = mocked_head
+
+        data = vidly.get_video_redirect_info('abc123', 'mp4', hd=True)
+        eq_(data, {
+            'url': 'http://cdn.vidly/file.mp4',
+            'length': '1234567',
+            'type': 'video/mp5',
+        })
+
+    @mock.patch('requests.head')
+    def test_get_video_redirect_info_not_found(self, rhead):
+
+        head_requests = []
+
+        def mocked_head(url):
+            head_requests.append(url)
+            return Response('Not found', 404)
+
+        rhead.side_effect = mocked_head
+
+        assert_raises(
+            vidly.VidlyNotFoundError,
+            vidly.get_video_redirect_info,
+            'xyz123',
+            'mp4',
+            hd=True
         )

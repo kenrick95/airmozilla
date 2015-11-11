@@ -1,24 +1,17 @@
 from nose.tools import ok_
 
 from django.contrib.auth.models import User
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.base.tests.testbase import DjangoTestCase
 
 
 class ManageTestCase(DjangoTestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
-
-    def shortDescription(self):
-        # Stop nose using the test docstring and instead the test method name.
-        pass
 
     def setUp(self):
         super(ManageTestCase, self).setUp()
         self.user = User.objects.create_superuser('fake', 'fake@f.com', 'fake')
         assert self.client.login(username='fake', password='fake')
-        self._upload_media('airmozilla/manage/tests/firefox.png')
 
     def _delete_test(self, obj, remove_view, redirect_view):
         """Common test for deleting an object in the management interface,

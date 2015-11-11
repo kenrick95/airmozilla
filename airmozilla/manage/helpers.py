@@ -1,6 +1,8 @@
 import re
 import cgi
 import urllib
+import urlparse as _urlparse
+
 import jinja2
 from jingo import register
 
@@ -8,9 +10,11 @@ from django.template import Context
 from django.template.loader import get_template
 from django.conf import settings
 from django.utils.timesince import timesince as _timesince
+from django.utils.html import avoid_wrapping
 
 from bootstrapform.templatetags.bootstrap import bootstrap_horizontal
 
+from airmozilla.manage.views.utils import STOPWORDS
 from airmozilla.main.models import Event, EventOldSlug
 from airmozilla.comments.models import Comment
 
@@ -58,6 +62,9 @@ def clashes_with_event(url):
 
 @register.function
 def full_tweet_url(tweet_id):
+    if not getattr(settings, 'TWITTER_USERNAME', None):  # pragma: no cover
+        # if it's not configured, there can't be a full URL
+        return
     return (
         'https://twitter.com/%s/status/%s'
         % (
@@ -128,12 +135,78 @@ def comment_status_to_css_label(status):
 
 @register.function
 def event_status_to_css_label(status):
-    if status == Event.STATUS_INITIATED:
+    if status in (Event.STATUS_INITIATED, Event.STATUS_SUBMITTED):
         return 'label-default'
-    if status == Event.STATUS_PENDING:
+    if status in (Event.STATUS_PENDING, Event.STATUS_PROCESSING):
         return 'label-primary'
     if status == Event.STATUS_SCHEDULED:
         return 'label-success'
     if status == Event.STATUS_REMOVED:
         return 'label-danger'
     raise NotImplementedError(status)
+
+
+@register.function
+def urlparse(url):
+    return _urlparse.urlparse(url)
+
+
+@register.filter
+def formatduration(seconds):
+    if seconds is None:
+        return ""
+    parts = []
+    if seconds >= 60:
+        minutes = seconds / 60
+        if seconds >= 60 * 60:
+            hours = seconds / 3600
+            minutes = (seconds % 3600) / 60
+            parts.append('%dh' % hours)
+        seconds = seconds % 60
+        parts.append('%dm' % minutes)
+    parts.append('%ds' % seconds)
+    return avoid_wrapping(' '.join(parts))
+
+
+@register.function
+def highlight_stopwords(text, class_='stopword', not_class='not-stopword'):
+    words = []
+    for word in text.split():
+        if word.lower() in STOPWORDS or word in '-?':
+            css_class = class_
+        else:
+            css_class = not_class
+
+        words.append('<span class="%s">%s</span>' % (
+            css_class,
+            jinja2.escape(word)
+        ))
+    return jinja2.Markup(' '.join(words))
+
+
+@register.function
+def highlight_matches(text, base, class_='match', stopword_class='stopword'):
+
+    def clean_word(s):
+        for char in '"\'():|[]{}':
+            s = s.replace(char, '')
+        return s
+
+    base_tokens = [clean_word(x) for x in base.lower().split()]
+    words = []
+    tokens = text.split()
+    for word in tokens:
+        if clean_word(word.lower()) in base_tokens:
+            css_class = class_
+        elif clean_word(word.lower()) in STOPWORDS or word in '-?':
+            css_class = stopword_class
+        else:
+            css_class = ''
+        if css_class:
+            words.append('<span class="%s">%s</span>' % (
+                css_class,
+                jinja2.escape(word)
+            ))
+        else:
+            words.append(jinja2.escape(word))
+    return jinja2.Markup(' '.join(words))

@@ -1,0 +1,41 @@
+{% raw %}
+<div class="picture-preview" ng-if="!loading && eventService.getPicture()">
+  <img ng-src="{{ eventService.getPicture().url }}"
+    width="{{ eventService.getPicture().width }}" height="{{ eventService.getPicture().height }}"
+    title="You can pick a different picture later">
+</div>
+<div class="loading-preview" ng-if="!loading && eventService.getId() && !eventService.getPicture()">
+  <p class="loading loading-vertical">Loading thumbnail</p>
+</div>
+{% endraw %}
+
+<h4>Details</h4>
+<div class="alert alert-danger show-hide" ng-show="hasErrors">
+    <h4>Form errors!</h4>
+    <p>The submitted form contains errors preventing it from completing the request.<br>
+    Review the form and look for error messages in red.</p>
+</div>
+
+{% raw %}
+
+<loading on="loading" message="Loading video details..."></loading>
+
+{% endraw %}
+<form class="show-hide" ng-show="!loading" method="post" ng-submit="save()"
+  id="details-form" style="margin-top:40px">
+
+  {{ bootstrapform_horizontal(form) }}
+
+  <div class="form-actions show-hide" ng-show="eventService.getId()">
+      <button type="submit" class="btn btn-primary submit" name="submit">
+          Save and proceed
+      </button>
+  </div>
+  <div class="form-actions show-hide" ng-show="!eventService.getId()">
+      <small>
+        You'll be able to save as soon as the upload is finished
+      </small>
+  </div>
+
+
+</form>

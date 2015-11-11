@@ -6,8 +6,8 @@ from django.views.decorators.http import require_POST
 from django.db import transaction
 from django.views.decorators.cache import cache_page
 from django.db.models import Q
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from jsonview.decorators import json_view
 
 from airmozilla.manage.utils import filename_to_notes
@@ -78,7 +78,8 @@ def _get_all_pictures(event=None):
         'id',
         'title',
         'placeholder_img',
-        'picture_id'
+        'picture_id',
+        # 'default_placeholder',
     )
     event_map = collections.defaultdict(list)
     cant_delete = collections.defaultdict(bool)
@@ -101,7 +102,9 @@ def _get_all_pictures(event=None):
         'created',
         'modified',
         'modified_user',
-        'event_id'
+        'event_id',
+        'default_placeholder',
+        'is_active',
     )
     qs = Picture.objects.all()
     if event:
@@ -109,6 +112,7 @@ def _get_all_pictures(event=None):
             Q(event__isnull=True) |
             Q(event=event)
         )
+        qs = qs.exclude(is_active=False)
     else:
         qs = qs.filter(event__isnull=True)
     for picture_dict in qs.order_by('event', '-created').values(*values):
@@ -120,7 +124,9 @@ def _get_all_pictures(event=None):
             'size': picture.size,
             'created': picture.created.isoformat(),
             'events': event_map[picture.id],
-            'event': picture.event_id
+            'event': picture.event_id,
+            'default_placeholder': picture.default_placeholder,
+            'is_active': picture.is_active,
         }
         if cant_delete.get(picture.id):
             item['cant_delete'] = True
@@ -134,7 +140,7 @@ def _get_all_pictures(event=None):
 
 @staff_required
 @permission_required('main.change_picture')
-@transaction.commit_on_success
+@transaction.atomic
 def picture_edit(request, id):
     picture = get_object_or_404(Picture, id=id)
     context = {'picture': picture}
@@ -143,6 +149,16 @@ def picture_edit(request, id):
         form = forms.PictureForm(request.POST, request.FILES, instance=picture)
         if form.is_valid():
             picture = form.save()
+            if picture.default_placeholder:
+                # make all others NOT-default
+                qs = (
+                    Picture.objects
+                    .exclude(id=picture.id)
+                    .filter(default_placeholder=True)
+                )
+                for other in qs:
+                    other.default_placeholder = False
+                    other.save()
             return redirect('manage:picturegallery')
     else:
         form = forms.PictureForm(instance=picture)
@@ -152,7 +168,7 @@ def picture_edit(request, id):
 
 @staff_required
 @permission_required('main.delete_picture')
-@transaction.commit_on_success
+@transaction.atomic
 @json_view
 def picture_delete(request, id):
     picture = get_object_or_404(Picture, id=id)
@@ -166,7 +182,7 @@ def picture_delete(request, id):
 @require_POST
 @staff_required
 @permission_required('main.delete_picture')
-@transaction.commit_on_success
+@transaction.atomic
 @json_view
 def picture_delete_all(request, id):
     event = get_object_or_404(Event, id=id)
@@ -181,7 +197,7 @@ def picture_delete_all(request, id):
 
 @staff_required
 @permission_required('main.add_picture')
-@transaction.commit_on_success
+@transaction.atomic
 @json_view
 def picture_add(request):
     context = {}
@@ -216,6 +232,7 @@ def picture_add(request):
         if form.is_valid():
             picture = form.save(commit=False)
             picture.modified_user = request.user
+            picture.is_active = True
             picture.save()
             return redirect('manage:picturegallery')
     else:
@@ -235,7 +252,7 @@ def redirect_picture_thumbnail(request, id):
 
 @staff_required
 @require_POST
-@transaction.commit_on_success
+@transaction.atomic
 @permission_required('main.change_event')
 @json_view
 def picture_event_associate(request, id):

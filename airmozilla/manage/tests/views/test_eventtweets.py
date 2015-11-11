@@ -1,14 +1,13 @@
 import datetime
-import json
 
+import pytz
 from nose.tools import eq_, ok_
 import mock
 
 from django.conf import settings
 from django.contrib.auth.models import Group
 from django.utils import timezone
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -17,6 +16,7 @@ from airmozilla.main.models import (
     Approval
 )
 from .base import ManageTestCase
+from airmozilla.base.tests.test_utils import Response
 
 
 class TestEventTweets(ManageTestCase):
@@ -30,15 +30,17 @@ class TestEventTweets(ManageTestCase):
         'tags': 'xxx',
         'template': '1',
         'start_time': '2012-3-4 12:00',
+        'estimated_duration': '3600',
         'timezone': 'US/Pacific'
     }
     placeholder = 'airmozilla/manage/tests/firefox.png'
 
-    @mock.patch('urllib.urlopen')
-    def test_prepare_new_tweet(self, p_urlopen):
+    @mock.patch('requests.get')
+    def test_prepare_new_tweet(self, rget):
 
-        def mocked_read():
-            r = {
+        def mocked_read(url, params):
+            assert url == settings.BITLY_URL
+            return Response({
                 u'status_code': 200,
                 u'data': {
                     u'url': u'http://mzl.la/1adh2wT',
@@ -48,10 +50,9 @@ class TestEventTweets(ManageTestCase):
                     u'new_hash': 0
                 },
                 u'status_txt': u'OK'
-            }
-            return json.dumps(r)
+            })
 
-        p_urlopen().read.side_effect = mocked_read
+        rget.side_effect = mocked_read
 
         event = Event.objects.get(title='Test event')
         # the event must have a real placeholder image
@@ -89,6 +90,17 @@ class TestEventTweets(ManageTestCase):
         ok_('http://mzl.la/1adh2wT' in textarea)
         ok_(event_url not in textarea)
 
+        # Sometimes, due to...
+        # https://bugzilla.mozilla.org/show_bug.cgi?id=1167211
+        # the session is cleared out here in this test, so we
+        # really make sure we're signed in
+        assert self.client.login(username='fake', password='fake')
+        assert self.client.session.items()
+
+        # load the form
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+
         # try to submit it with longer than 140 characters
         response = self.client.post(url, {
             'text': 'x' * 141,
@@ -116,6 +128,71 @@ class TestEventTweets(ManageTestCase):
         ok_(not event_tweet.error)
         ok_(not event_tweet.tweet_id)
 
+    @mock.patch('requests.get')
+    def test_prepare_new_tweet_on_future_event(self, rget):
+
+        def mocked_read(url, params):
+            assert url == settings.BITLY_URL
+            return Response({
+                u'status_code': 200,
+                u'data': {
+                    u'url': u'http://mzl.la/1adh2wT',
+                    u'hash': u'1adh2wT',
+                    u'global_hash': u'1adh2wU',
+                    u'long_url': u'https://air.mozilla.org/it-buildout/',
+                    u'new_hash': 0
+                },
+                u'status_txt': u'OK'
+            })
+
+        rget.side_effect = mocked_read
+
+        event = Event.objects.get(title='Test event')
+        event.start_time = timezone.now() + datetime.timedelta(days=10)
+        event.save()
+        assert event.is_scheduled()
+        assert event.location
+        assert event.location.timezone
+
+        # on the edit page, there should be a link
+        url = reverse('manage:new_event_tweet', args=(event.pk,))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        help_text_part = 'This event starts %s' % (
+            event.location_time.strftime('%Y-%m-%d %H:%M')
+        )
+        ok_(help_text_part in response.content)
+
+    def test_edit_event_tweet(self):
+        event = Event.objects.get(title='Test event')
+        assert event.location and event.location.timezone == 'US/Pacific'
+        tomorrow = timezone.now() + datetime.timedelta(days=1)
+        tweet = EventTweet.objects.create(
+            event=event,
+            text='Something something',
+            creator=self.user,
+            include_placeholder=True,
+            send_date=tomorrow,
+        )
+        url = reverse('manage:edit_event_tweet', args=(event.id, tweet.id))
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Something something' in response.content)
+        tz = pytz.timezone(event.location.timezone)
+        data = {
+            'text': 'Different Bla ',
+            'include_placeholder': True,
+            'send_date': (
+                tz.normalize(tweet.send_date)
+            ).strftime('%Y-%m-%d %H:%M'),
+        }
+        response = self.client.post(url, data)
+        eq_(response.status_code, 302)
+        tweet = EventTweet.objects.get(id=tweet.id)
+        eq_(tweet.text, 'Different Bla')
+        # because we round but they won't be equal, but close
+        ok_(abs(tomorrow - tweet.send_date) <= datetime.timedelta(hours=1))
+
     def test_event_tweets_empty(self):
         event = Event.objects.get(title='Test event')
         url = reverse('manage:event_tweets', args=(event.pk,))
@@ -125,7 +202,7 @@ class TestEventTweets(ManageTestCase):
     def test_event_tweets_states(self):
         event = Event.objects.get(title='Test event')
         assert event in Event.objects.approved()
-        group = Group.objects.get(name='testapprover')
+        group = Group.objects.create(name='testapprover')
         Approval.objects.create(
             event=event,
             group=group,
@@ -158,8 +235,8 @@ class TestEventTweets(ManageTestCase):
 
         tweet.tweet_id = '1234567890'
         tweet.sent_date = (
-            timezone.now()
-            - datetime.timedelta(days=1)
+            timezone.now() -
+            datetime.timedelta(days=1)
         )
         tweet.save()
 
@@ -196,7 +273,7 @@ class TestEventTweets(ManageTestCase):
     def test_all_event_tweets_states(self):
         event = Event.objects.get(title='Test event')
         assert event in Event.objects.approved()
-        group = Group.objects.get(name='testapprover')
+        group = Group.objects.create(name='testapprover')
         Approval.objects.create(
             event=event,
             group=group,
@@ -228,10 +305,7 @@ class TestEventTweets(ManageTestCase):
         ok_('Bla bla' in response.content)
 
         tweet.tweet_id = '1234567890'
-        tweet.sent_date = (
-            timezone.now()
-            - datetime.timedelta(days=1)
-        )
+        tweet.sent_date = timezone.now() - datetime.timedelta(days=1)
         tweet.save()
 
         response = self.client.get(url)
@@ -321,12 +395,11 @@ class TestEventTweets(ManageTestCase):
         ok_(not EventTweet.objects.all().count())
 
     def test_create_event_tweet_with_location_timezone(self):
-        location = Location.objects.create(
+        event = Event.objects.get(title='Test event')
+        event.location = Location.objects.create(
             name='Paris',
             timezone='Europe/Paris'
         )
-        event = Event.objects.get(title='Test event')
-        event.location = location
         event.save()
 
         # the event must have a real placeholder image

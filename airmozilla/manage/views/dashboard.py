@@ -1,9 +1,11 @@
 import datetime
+from collections import defaultdict
 
 from django.contrib.auth.models import User
 from django.shortcuts import render
 from django.utils import timezone
 from django.db.models import Sum
+from django.template.defaultfilters import filesizeformat
 
 from jsonview.decorators import json_view
 
@@ -12,8 +14,11 @@ from airmozilla.main.models import (
     SuggestedEvent,
     Picture,
     EventRevision,
+    Chapter,
 )
+from airmozilla.starred.models import StarredEvent
 from airmozilla.comments.models import Comment
+from airmozilla.uploads.models import Upload
 
 from .decorators import staff_required
 
@@ -45,37 +50,37 @@ def dashboard_data(request):
     last_year = this_year.replace(year=this_year.year - 1)
     context['groups'] = []
 
+    def make_filter(key, gte=None, lt=None):
+        filter = {}
+        if gte is not None:
+            filter['%s__gte' % key] = gte
+        if lt is not None:
+            filter['%s__lt' % key] = lt
+        return filter
+
     def get_counts(qs, key):
         counts = {}
 
-        def make_filter(gte=None, lt=None):
-            filter = {}
-            if gte is not None:
-                filter['%s__gte' % key] = gte
-            if lt is not None:
-                filter['%s__lt' % key] = lt
-            return filter
-
         counts['today'] = qs.filter(
-            **make_filter(gte=today, lt=tomorrow)
+            **make_filter(key, gte=today, lt=tomorrow)
         ).count()
         counts['yesterday'] = qs.filter(
-            **make_filter(gte=yesterday, lt=today)).count()
+            **make_filter(key, gte=yesterday, lt=today)).count()
 
         counts['this_week'] = qs.filter(
-            **make_filter(gte=this_week, lt=next_week)).count()
+            **make_filter(key, gte=this_week, lt=next_week)).count()
         counts['last_week'] = qs.filter(
-            **make_filter(gte=last_week, lt=this_week)).count()
+            **make_filter(key, gte=last_week, lt=this_week)).count()
 
         counts['this_month'] = qs.filter(
-            **make_filter(gte=this_month, lt=next_month)).count()
+            **make_filter(key, gte=this_month, lt=next_month)).count()
         counts['last_month'] = qs.filter(
-            **make_filter(gte=last_month, lt=this_month)).count()
+            **make_filter(key, gte=last_month, lt=this_month)).count()
 
         counts['this_year'] = qs.filter(
-            **make_filter(gte=this_year, lt=next_year)).count()
+            **make_filter(key, gte=this_year, lt=next_year)).count()
         counts['last_year'] = qs.filter(
-            **make_filter(gte=last_year, lt=this_year)).count()
+            **make_filter(key, gte=last_year, lt=this_year)).count()
 
         counts['ever'] = qs.count()
         return counts
@@ -123,17 +128,29 @@ def dashboard_data(request):
         'counts': counts
     })
 
-    def get_duration_totals(qs):
+    # Chapters
+    counts = get_counts(Chapter.objects.all(), 'created')
+    context['groups'].append({
+        'name': 'Chapters',
+        'counts': counts
+    })
 
-        key = 'start_time'
+    # Starred events
+    counts = get_counts(StarredEvent.objects.all(), 'created')
+    context['groups'].append({
+        'name': 'Starred events',
+        'counts': counts
+    })
 
-        def make_filter(gte=None, lt=None):
-            filter = {}
-            if gte is not None:
-                filter['%s__gte' % key] = gte
-            if lt is not None:
-                filter['%s__lt' % key] = lt
-            return filter
+    def get_duration_totals(qs, key='start_time'):
+
+        # def make_filter(gte=None, lt=None):
+        #     filter = {}
+        #     if gte is not None:
+        #         filter['%s__gte' % key] = gte
+        #     if lt is not None:
+        #         filter['%s__lt' % key] = lt
+        #     return filter
 
         counts = {}
 
@@ -148,21 +165,56 @@ def dashboard_data(request):
                 return "%dm" % minutes
             return "%ds" % seconds
 
-        counts['today'] = sum(qs.filter(**make_filter(gte=today)))
+        counts['today'] = sum(qs.filter(
+            **make_filter(key, gte=today)))
         counts['yesterday'] = sum(qs.filter(
-            **make_filter(gte=yesterday, lt=today)))
+            **make_filter(key, gte=yesterday, lt=today)))
 
-        counts['this_week'] = sum(qs.filter(**make_filter(gte=this_week)))
+        counts['this_week'] = sum(qs.filter(
+            **make_filter(key, gte=this_week)))
         counts['last_week'] = sum(qs.filter(
-            **make_filter(gte=last_week, lt=this_week)))
+            **make_filter(key, gte=last_week, lt=this_week)))
 
-        counts['this_month'] = sum(qs.filter(**make_filter(gte=this_month)))
+        counts['this_month'] = sum(qs.filter(
+            **make_filter(key, gte=this_month)))
         counts['last_month'] = sum(qs.filter(
-            **make_filter(gte=last_month, lt=this_month)))
+            **make_filter(key, gte=last_month, lt=this_month)))
 
-        counts['this_year'] = sum(qs.filter(**make_filter(gte=this_year)))
+        counts['this_year'] = sum(qs.filter(
+            **make_filter(key, gte=this_year)))
         counts['last_year'] = sum(qs.filter(
-            **make_filter(gte=last_year, lt=this_year)))
+            **make_filter(key, gte=last_year, lt=this_year)))
+
+        counts['ever'] = sum(qs)
+        return counts
+
+    def get_size_totals(qs, key='created'):
+
+        counts = {}
+
+        def sum(elements):
+            bytes = elements.aggregate(Sum('size'))['size__sum']
+            return filesizeformat(bytes)
+
+        counts['today'] = sum(qs.filter(
+            **make_filter(key, gte=today)))
+        counts['yesterday'] = sum(qs.filter(
+            **make_filter(key, gte=yesterday, lt=today)))
+
+        counts['this_week'] = sum(qs.filter(
+            **make_filter(key, gte=this_week)))
+        counts['last_week'] = sum(qs.filter(
+            **make_filter(key, gte=last_week, lt=this_week)))
+
+        counts['this_month'] = sum(qs.filter(
+            **make_filter(key, gte=this_month)))
+        counts['last_month'] = sum(qs.filter(
+            **make_filter(key, gte=last_month, lt=this_month)))
+
+        counts['this_year'] = sum(qs.filter(
+            **make_filter(key, gte=this_year)))
+        counts['last_year'] = sum(qs.filter(
+            **make_filter(key, gte=last_year, lt=this_year)))
 
         counts['ever'] = sum(qs)
         return counts
@@ -174,4 +226,155 @@ def dashboard_data(request):
         'counts': counts
     })
 
+    counts = get_size_totals(Upload.objects.all())
+    context['groups'].append({
+        'name': 'Uploads',
+        'counts': counts,
+        'small': True
+    })
+
     return context
+
+
+@staff_required
+def dashboard_graphs(request):  # pragma: no cover
+    """experimental"""
+    return render(request, 'manage/dashboard_graphs.html')
+
+
+@staff_required
+@json_view
+def dashboard_data_graphs(request):  # pragma: no cover
+    """experimental"""
+    YEARS = 3
+    now = timezone.now()
+
+    def get_events(years_back):
+        first_date = datetime.datetime(now.year - years_back + 1, 1, 1)
+
+        objects = (
+            Event.objects
+            .filter(archive_time__lt=now)
+            .filter(created__gt=first_date.replace(tzinfo=timezone.utc))
+            .order_by('created')
+        )
+        buckets = {}
+        for each in objects.values_list('created'):
+            created, = each
+            year = created.year
+            if year not in buckets:
+                buckets[year] = defaultdict(int)
+            next_monday = created + datetime.timedelta(
+                days=7 - created.weekday()
+            )
+            key = next_monday.strftime('%Y-%m-%d')
+            buckets[year][key] += 1
+        legends = sorted(buckets.keys())
+
+        last_year = legends[-1]
+
+        def fake_year(date_str, year):
+            return date_str.replace(str(year), str(last_year))
+
+        data = []
+        for year in legends:
+            group = sorted(
+                {'date': fake_year(k, year), 'value': v}
+                for k, v in buckets[year].items()
+            )
+            data.append(group)
+        return {
+            'type': 'events',
+            'title': 'New Events',
+            'data': data,
+            'description': 'Number of added events per year',
+            'legends': legends,
+        }
+
+    def get_revisions(years_back):
+        first_date = datetime.datetime(now.year - years_back + 1, 1, 1)
+
+        objects = (
+            EventRevision.objects
+            .filter(created__gt=first_date.replace(tzinfo=timezone.utc))
+            .order_by('created')
+        )
+        buckets = {}
+        for each in objects.values_list('created'):
+            created, = each
+            year = created.year
+            if year not in buckets:
+                buckets[year] = defaultdict(int)
+            next_monday = created + datetime.timedelta(
+                days=7 - created.weekday()
+            )
+            key = next_monday.strftime('%Y-%m-%d')
+            buckets[year][key] += 1
+        legends = sorted(buckets.keys())
+
+        last_year = legends[-1]
+
+        def fake_year(date_str, year):
+            return date_str.replace(str(year), str(last_year))
+
+        data = []
+        for year in legends:
+            group = sorted(
+                {'date': fake_year(k, year), 'value': v}
+                for k, v in buckets[year].items()
+            )
+            data.append(group)
+        return {
+            'type': 'revisions',
+            'title': 'Event Revisions',
+            'data': data,
+            'description': 'Number of event edits per year',
+            'legends': legends,
+        }
+
+    def get_users(years_back):
+        first_date = datetime.datetime(now.year - years_back + 1, 1, 1)
+
+        objects = (
+            User.objects
+            .filter(date_joined__gt=first_date.replace(tzinfo=timezone.utc))
+            .order_by('date_joined')
+        )
+        buckets = {}
+        for each in objects.values_list('date_joined'):
+            created, = each
+            year = created.year
+            if year not in buckets:
+                buckets[year] = defaultdict(int)
+            next_monday = created + datetime.timedelta(
+                days=7 - created.weekday()
+            )
+            key = next_monday.strftime('%Y-%m-%d')
+            buckets[year][key] += 1
+        legends = sorted(buckets.keys())
+
+        last_year = legends[-1]
+
+        def fake_year(date_str, year):
+            return date_str.replace(str(year), str(last_year))
+
+        data = []
+        for year in legends:
+            group = sorted(
+                {'date': fake_year(k, year), 'value': v}
+                for k, v in buckets[year].items()
+            )
+            data.append(group)
+        return {
+            'type': 'users',
+            'title': 'New Users',
+            'data': data,
+            'description': 'Number of first joining users per year',
+            'legends': legends,
+        }
+
+    groups = []
+    groups.append(get_events(YEARS))
+    groups.append(get_users(YEARS))
+    groups.append(get_revisions(2))
+    return {'groups': groups}

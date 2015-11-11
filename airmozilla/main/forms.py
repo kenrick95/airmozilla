@@ -1,7 +1,18 @@
+import re
+
 from django import forms
+from django.db.models import Q
+from django.contrib.auth.models import User
 
 from airmozilla.base.forms import BaseModelForm, BaseForm, GallerySelect
-from airmozilla.main.models import EventRevision, RecruitmentMessage, Event
+from airmozilla.main.models import (
+    EventRevision,
+    RecruitmentMessage,
+    Event,
+    Channel,
+    Chapter,
+)
+from airmozilla.comments.models import Discussion
 
 
 class CalendarDataForm(BaseForm):
@@ -47,6 +58,12 @@ class EventEditForm(BaseModelForm):
     def __init__(self, *args, **kwargs):
         self.event = kwargs.pop('event', None)
         super(EventEditForm, self).__init__(*args, **kwargs)
+
+        self.fields['channels'].queryset = (
+            Channel.objects
+            .filter(Q(never_show=False) | Q(id__in=self.event.channels.all()))
+        )
+
         self.fields['placeholder_img'].required = False
         self.fields['placeholder_img'].label = (
             'Upload a picture from your computer'
@@ -61,6 +78,8 @@ class EventEditForm(BaseModelForm):
         self.fields['picture'].label = (
             'Select an existing picture from the gallery'
         )
+        if not (self.event.is_upcoming() or self.event.is_live()):
+            del self.fields['call_info']
 
     def clean(self):
         cleaned_data = super(EventEditForm, self).clean()
@@ -73,6 +92,45 @@ class EventEditForm(BaseModelForm):
         return cleaned_data
 
 
+class EventDiscussionForm(BaseModelForm):
+
+    moderators = forms.CharField(
+        widget=forms.widgets.Textarea()
+    )
+
+    class Meta:
+        model = Discussion
+        exclude = ('event', )
+
+    def __init__(self, *args, **kwargs):
+        self.event = kwargs.pop('event')
+        super(EventDiscussionForm, self).__init__(*args, **kwargs)
+
+        self.fields['moderators'].widget = forms.widgets.Textarea()
+        self.fields['moderators'].help_text = (
+            "One email address per line or separated by commas."
+        )
+
+    def clean_moderators(self):
+        value = self.cleaned_data['moderators']
+        emails = [x for x in re.split('[,\s]', value) if x.strip()]
+        users = []
+        for email in emails:
+            try:
+                users.append(User.objects.get(email__iexact=email))
+            except User.DoesNotExist:
+                raise forms.ValidationError(
+                    "{0} does not exist as a Air Mozilla user".format(
+                        email
+                    )
+                )
+        if not users:
+            raise forms.ValidationError(
+                "You must have at least one moderator"
+            )
+        return users
+
+
 class ExecutiveSummaryForm(BaseForm):
 
     start = forms.DateTimeField(required=False)
@@ -82,3 +140,38 @@ class ExecutiveSummaryForm(BaseForm):
         if value and value.weekday() != 0:
             raise forms.ValidationError("Not a Monday")
         return value
+
+
+class ThumbnailsForm(BaseForm):
+    id = forms.IntegerField()
+    width = forms.IntegerField()
+    height = forms.IntegerField()
+
+
+class EventEditTagsForm(BaseModelForm):
+
+    event_id = forms.CharField(widget=forms.HiddenInput())
+    tags = forms.CharField(required=False)
+
+    class Meta:
+        model = Event
+        fields = ['tags', 'event_id']
+
+
+class EventChapterEditForm(BaseModelForm):
+
+    class Meta:
+        model = Chapter
+        fields = ('timestamp', 'text')
+
+    def __init__(self, event, *args, **kwargs):
+        self.event = event
+        super(EventChapterEditForm, self).__init__(*args, **kwargs)
+
+    def clean_timestamp(self):
+        timestamp = self.cleaned_data['timestamp']
+        if timestamp > self.event.duration:
+            raise forms.ValidationError(
+                'Timestamp longer than the video itself'
+            )
+        return timestamp

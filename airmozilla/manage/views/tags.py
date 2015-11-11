@@ -1,11 +1,12 @@
 import collections
 
+from django import http
 from django.contrib import messages
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db import transaction
 from django.db.models import Count
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from jsonview.decorators import json_view
 
 from airmozilla.main.models import Event, Tag
@@ -61,7 +62,7 @@ def tags_data(request):
 @staff_required
 @permission_required('main.change_event')
 @cancel_redirect('manage:tags')
-@transaction.commit_on_success
+@transaction.atomic
 def tag_edit(request, id):
     tag = get_object_or_404(Tag, id=id)
     if request.method == 'POST':
@@ -91,14 +92,17 @@ def tag_edit(request, id):
         'repeated': repeated,
         'is_repeated': repeated > 1
     }
-    if repeated:
-        context['repeated_form'] = forms.TagMergeForm(name=tag.name)
+
+    if repeated > 1:
+        context['repeated_form'] = forms.TagMergeRepeatedForm(this_tag=tag)
+    else:
+        context['merge_form'] = forms.TagMergeForm(this_tag=tag)
     return render(request, 'manage/tag_edit.html', context)
 
 
 @staff_required
-@permission_required('main.change_event')
-@transaction.commit_on_success
+@permission_required('main.delete_tag')
+@transaction.atomic
 def tag_remove(request, id):
     if request.method == 'POST':
         tag = get_object_or_404(Tag, id=id)
@@ -110,27 +114,57 @@ def tag_remove(request, id):
 
 
 @staff_required
-@permission_required('main.change_event')
+@permission_required('main.change_tag')
 @cancel_redirect('manage:tags')
-@transaction.commit_on_success
+@transaction.atomic
 def tag_merge(request, id):
     tag = get_object_or_404(Tag, id=id)
-    name_to_keep = request.POST['name']
+    form = forms.TagMergeForm(tag, request.POST)
+    if not form.is_valid():
+        return http.HttpResponseBadRequest(form.errors)
+    destination = get_object_or_404(
+        Tag,
+        name__iexact=form.cleaned_data['name']
+    )
 
-    tag_to_keep = None
-    for t in Tag.objects.filter(name__iexact=tag.name):
-        if t.name == name_to_keep:
-            tag_to_keep = t
-            break
+    count_events = 0
+    for event in Event.objects.filter(tags=tag):
+        event.tags.remove(tag)
+        event.tags.add(destination)
+        count_events += 1
+    tag.delete()
+
+    messages.info(
+        request,
+        '"%s" is the new cool tag (affected %s events)' % (
+            destination.name,
+            count_events,
+        )
+    )
+
+    return redirect('manage:tags')
+
+
+@staff_required
+@permission_required('main.change_tag')
+@cancel_redirect('manage:tags')
+@transaction.atomic
+def tag_merge_repeated(request, id):
+    tag = get_object_or_404(Tag, id=id)
+    tag_to_keep = get_object_or_404(Tag, id=request.POST['keep'])
 
     merge_count = 0
-    for t in Tag.objects.filter(name__iexact=tag.name):
-        if t.name != name_to_keep:
-            for event in Event.objects.filter(tags=t):
-                event.tags.remove(t)
-                event.tags.add(tag_to_keep)
-            t.delete()
-            merge_count += 1
+    other_tags = (
+        Tag.objects
+        .filter(name__iexact=tag.name)
+        .exclude(id=tag_to_keep.id)
+    )
+    for t in other_tags:
+        for event in Event.objects.filter(tags=t):
+            event.tags.remove(t)
+            event.tags.add(tag_to_keep)
+        t.delete()
+        merge_count += 1
 
     messages.info(
         request,

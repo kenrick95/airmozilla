@@ -93,6 +93,9 @@ VIDLY_USER_KEY = ''
 # And this is needed for EdgeCast
 EDGECAST_SECURE_KEY = ''
 
+# Needed for secure streams with Akamai
+AKAMAI_SECURE_KEY = ''
+
 # Needed to be able to look up vouced users
 MOZILLIANS_API_KEY = ''
 MOZILLIANS_API_APPNAME = 'air_mozilla'
@@ -146,3 +149,12 @@ AWS_SECRET_ACCESS_KEY = ''
 # Setting this to 'air.mozilla.org' will mean it can use the production
 # domain even when you run it locally.
 #AUTOCOMPETER_DOMAIN = ''
+
+# If you don't want to run a separate Celeryd process you can set this to True
+#CELERY_ALWAYS_EAGER = True
+#CELERY_EAGER_PROPAGATES_EXCEPTIONS = True
+
+# By default Celeryd is configured to simply write to its own database.
+# For production we probably want to override this with a RabbitMQ URL
+# or something like that.
+#BROKER_URL = 'django://'

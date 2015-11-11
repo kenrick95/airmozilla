@@ -11,7 +11,12 @@ Channels | {{ super() }}
 {{ super() }}
 <style type="text/css">
 p.feed { float: right; }
+#content-sub { display: block; } /* un-hide it */
 </style>
+{% endblock %}
+
+{% block sidebar_inner %}
+{% include "main/_sidebar_inner.html" %}
 {% endblock %}
 
 {% block content_main %}
@@ -19,7 +24,11 @@ p.feed { float: right; }
   <div class="channels">
   {% for channel, event_count, subchannel_count in channels %}
     <p class="feed">
-      <a href="{{ url('main:channel_feed', channel.slug, feed_privacy) }}">Feed</a>
+      <a href="{{ url('main:channel_feed', channel.slug, feed_privacy) }}">Feed</a>,
+      <a href="{{ url('main:itunes_feed', channel.slug) }}"
+         title="Only public and archived events">Podcast</a>,
+      <a href="{{ url('main:calendar_channel_ical', feed_privacy, channel.slug) }}"
+         title="Calendar specifically for {{ channel.name }} with privacy {{ calendar_privacy }}">iCal</a>
     </p>
     <h3><a href="{{ url('main:home_channels', channel.slug) }}">{{ channel.name }}</a></h3>
     {% if event_count and subchannel_count %}

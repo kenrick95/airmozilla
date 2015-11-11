@@ -3,11 +3,14 @@ import mock
 
 from django.conf import settings
 from django.contrib.auth.models import User, Group, Permission
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import UserProfile, Event, CuratedGroup
-from airmozilla.base.tests.test_mozillians import Response, IN_GROUPS
+from airmozilla.base.tests.test_mozillians import (
+    Response,
+    VOUCHED_FOR_USERS,
+    NO_USERS,
+)
 from .base import ManageTestCase
 
 
@@ -16,16 +19,16 @@ class TestPermissions(ManageTestCase):
         """ Client with no log in - should be rejected. """
         self.client.logout()
         response = self.client.get(reverse('manage:dashboard'))
-        self.assertRedirects(response, settings.LOGIN_URL
-                             + '?next=' + reverse('manage:dashboard'))
+        self.assertRedirects(response, settings.LOGIN_URL +
+                             '?next=' + reverse('manage:dashboard'))
 
     def test_not_staff(self):
         """ User is not staff - should be rejected. """
         self.user.is_staff = False
         self.user.save()
         response = self.client.get(reverse('manage:dashboard'))
-        self.assertRedirects(response, settings.LOGIN_URL
-                             + '?next=' + reverse('manage:dashboard'))
+        self.assertRedirects(response, settings.LOGIN_URL +
+                             '?next=' + reverse('manage:dashboard'))
 
     def test_staff_home(self):
         """ User is staff - should get an OK homepage. """
@@ -35,10 +38,15 @@ class TestPermissions(ManageTestCase):
     @mock.patch('requests.get')
     def test_editing_events_with_curated_groups(self, rget):
 
+        calls = []
+
         def mocked_get(url, **options):
+            calls.append(url)
             if 'peterbe' in url:
-                print
-                return Response(IN_GROUPS)
+                if 'group=badasses' in url:
+                    return Response(NO_USERS)
+                if 'group=swedes':
+                    return Response(VOUCHED_FOR_USERS)
             raise NotImplementedError(url)
 
         rget.side_effect = mocked_get
@@ -104,3 +112,5 @@ class TestPermissions(ManageTestCase):
         )
         response = self.client.get(url)
         eq_(response.status_code, 200)
+
+        assert len(calls) == 2, calls

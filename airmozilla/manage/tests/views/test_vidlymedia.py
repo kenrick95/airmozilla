@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
+
 import json
 import hashlib
+import datetime
 from cStringIO import StringIO
 
 from nose.tools import eq_, ok_
 import mock
 
+from django.utils import timezone
 from django.core.cache import cache
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -23,8 +25,7 @@ from airmozilla.manage.tests.test_vidly import (
 )
 from .base import ManageTestCase
 
-SAMPLE_MEDIA_SUBMITTED_XML = """
-<?xml version="1.0"?>
+SAMPLE_MEDIA_SUBMITTED_XML = """<?xml version="1.0"?>
 <Response>
 <Message>All medias have been added.</Message>
 <MessageCode>2.1</MessageCode>
@@ -78,7 +79,7 @@ SAMPLE_MEDIA_RESULT_FAILED = """
     </Task>
   </Result>
 </Response>
-"""
+""".strip()
 
 SAMPLE_MEDIA_RESULT_SUCCESS = """
 <?xml version="1.0"?>
@@ -122,7 +123,7 @@ SAMPLE_MEDIA_RESULT_SUCCESS = """
         </Task>
     </Result>
 </Response>
-"""
+""".strip()
 
 
 class TestVidlyMedia(ManageTestCase):
@@ -154,13 +155,17 @@ class TestVidlyMedia(ManageTestCase):
         eq_(response.status_code, 200)
         ok_(event.title not in response.content)
 
+        then = timezone.now() - datetime.timedelta(days=1)
         VidlySubmission.objects.create(
             event=event,
-            tag='xyz000'
+            tag='xyz000',
+            submission_time=then,
+            finished=then + datetime.timedelta(seconds=7)
         )
         response = self.client.get(url)
         eq_(response.status_code, 200)
         ok_(event.title in response.content)
+        ok_('7s' in response.content)
 
     def test_vidly_media_repeated_events(self):
         url = reverse('manage:vidly_media')
@@ -666,3 +671,62 @@ class TestVidlyMedia(ManageTestCase):
         response = self.client.post(url, {'xml': SAMPLE_MEDIA_RESULT_SUCCESS})
         eq_(response.status_code, 200)
         eq_('OK\n', response.content)
+
+    def test_vidly_media_timings(self):
+        url = reverse('manage:vidly_media_timings')
+        response = self.client.get(url)
+        # Not much is happening on this page server side.
+        # It just loads some javascript that loads some JSON
+        eq_(response.status_code, 200)
+
+    def test_vidly_media_timings_data(self):
+        url = reverse('manage:vidly_media_timings_data')
+        response = self.client.get(url)
+        # Not much is happening on this page server side.
+        # It just loads some javascript that loads some JSON
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        eq_(data['points'], [])
+        eq_(data['slope'], None)
+
+        event = Event.objects.get(title='Test event')
+        event.duration = 60
+        event.save()
+        VidlySubmission.objects.create(
+            event=event,
+            submission_time=timezone.now(),
+            finished=timezone.now() + datetime.timedelta(seconds=150),
+        )
+        VidlySubmission.objects.create(
+            event=event,
+            submission_time=timezone.now(),
+            finished=timezone.now() + datetime.timedelta(seconds=100),
+        )
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        eq_(data['points'], [{'y': 150, 'x': 60}, {'y': 100, 'x': 60}])
+        # Because the X value never changes you get a standard deviation
+        # of 0 which means the slope can't be calculated
+        eq_(data['slope'], None)
+
+        other_event = Event.objects.create(
+            duration=200,
+            start_time=event.start_time,
+        )
+        VidlySubmission.objects.create(
+            event=other_event,
+            submission_time=timezone.now(),
+            finished=timezone.now() + datetime.timedelta(seconds=300),
+        )
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        data = json.loads(response.content)
+        eq_(data['points'], [
+            {'y': 150, 'x': 60},
+            {'y': 100, 'x': 60},
+            {'y': 300, 'x': 200},
+        ])
+        # Because the X value never changes you get a standard deviation
+        # of 0 which means the slope can't be calculated
+        eq_(data['slope'], 1.25)

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+from collections import defaultdict
 from xml.parsers.expat import ExpatError
 
 from django import http
@@ -8,12 +9,17 @@ from django.contrib import messages
 from django.shortcuts import render, redirect, get_object_or_404
 from django.views.decorators.http import require_POST
 from django.db.models import Q, Count
+from django.views.decorators.csrf import csrf_exempt
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from jsonview.decorators import json_view
 import xmltodict
 
-from airmozilla.base.utils import paginate, get_base_url
+from airmozilla.base.utils import (
+    paginate,
+    get_base_url,
+    prepare_vidly_video_url,
+)
 from airmozilla.main.models import Event, VidlySubmission
 from airmozilla.manage import forms
 from airmozilla.manage import vidly
@@ -25,8 +31,7 @@ from .decorators import superuser_required
 @superuser_required
 def vidly_media(request):
     events = Event.objects.filter(
-        Q(template__name__contains='Vid.ly')
-        |
+        Q(template__name__contains='Vid.ly') |
         Q(pk__in=VidlySubmission.objects.all()
             .values_list('event_id', flat=True))
     )
@@ -72,8 +77,12 @@ def vidly_media(request):
 
     events = events.order_by('-start_time')
     events = events.select_related('template')
-
     paged = paginate(events, request.GET.get('page'), 15)
+
+    submissions = defaultdict(list)
+    for submission in VidlySubmission.objects.filter(event__in=paged):
+        submissions[submission.event_id].append(submission)
+
     vidly_resubmit_form = forms.VidlyResubmitForm()
     context = {
         'paginate': paged,
@@ -81,6 +90,7 @@ def vidly_media(request):
         'vidly_resubmit_form': vidly_resubmit_form,
         'repeated': repeated,
         'get_repeats': get_repeats,
+        'submissions': submissions,
     }
     return render(request, 'manage/vidly_media.html', context)
 
@@ -88,6 +98,7 @@ def vidly_media(request):
 @superuser_required
 @json_view
 def vidly_media_status(request):
+    context = {}
     if request.GET.get('tag'):
         tag = request.GET.get('tag')
     else:
@@ -127,8 +138,8 @@ def vidly_media_status(request):
         if results:
             cache.set(cache_key, results, expires)
 
-    _status = results.get('Status')
-    return {'status': _status}
+    context['status'] = results.get('Status')
+    return context
 
 
 @superuser_required
@@ -237,15 +248,16 @@ def vidly_media_resubmit(request):
     webhook_url = base_url + reverse('manage:vidly_media_webhook')
 
     old_tag = environment['tag']
+    url = prepare_vidly_video_url(form.cleaned_data['url'])
     shortcode, error = vidly.add_media(
-        url=form.cleaned_data['url'],
+        url=url,
         hd=form.cleaned_data['hd'],
         token_protection=token_protection,
         notify_url=webhook_url,
     )
     VidlySubmission.objects.create(
         event=event,
-        url=form.cleaned_data['url'],
+        url=url,
         token_protection=token_protection,
         hd=form.cleaned_data['hd'],
         tag=shortcode,
@@ -274,6 +286,7 @@ def vidly_media_resubmit(request):
 
 # Note that this view is publically available.
 # That means we can't trust the content but we can take it as a hint.
+@csrf_exempt
 @require_POST
 def vidly_media_webhook(request):
     if not request.POST.get('xml'):
@@ -306,3 +319,22 @@ def vidly_media_webhook(request):
         pass
 
     return http.HttpResponse('OK\n')
+
+
+@superuser_required
+def vidly_media_timings(request):
+    context = {
+    }
+    return render(request, 'manage/vidly_media_timings.html', context)
+
+
+@superuser_required
+@json_view
+def vidly_media_timings_data(request):
+    points = VidlySubmission.get_points(100)
+    slope = VidlySubmission.get_least_square_slope(points=points)
+    context = {
+        'points': points,
+        'slope': slope,
+    }
+    return context

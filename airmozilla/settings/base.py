@@ -1,12 +1,24 @@
 # This is your project's main settings file that can be committed to your
-# repo. If you need to override a setting locally, use settings_local.py
+# repo. If you need to override a setting locally, use settings/local.py
+import os
 
-from funfactory.settings_base import *
 
-# Name of the top-level module where you put all your apps.
-# If you did not install Playdoh with the funfactory installer script
-# you may need to edit this value. See the docs about installing from a
-# clone.
+ROOT = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        '..',
+        '..'
+    ))
+
+
+def path(*dirs):
+    return os.path.join(ROOT, *dirs)
+
+
+SITE_ID = 1
+
+LANGUAGE_CODE = 'en-US'
+
 PROJECT_MODULE = 'airmozilla'
 
 
@@ -14,7 +26,6 @@ PROJECT_MODULE = 'airmozilla'
 ROOT_URLCONF = '%s.urls' % PROJECT_MODULE
 
 INSTALLED_APPS = (
-    'funfactory',
     'compressor',
     'django_browserid',
     'django.contrib.auth',
@@ -25,30 +36,61 @@ INSTALLED_APPS = (
     'session_csrf',
 
     # Application base, containing global templates.
-    '%s.base' % PROJECT_MODULE,
-    '%s.main' % PROJECT_MODULE,
-    '%s.auth' % PROJECT_MODULE,
-    '%s.manage' % PROJECT_MODULE,
-    '%s.suggest' % PROJECT_MODULE,
-    '%s.search' % PROJECT_MODULE,
-    '%s.comments' % PROJECT_MODULE,
-    '%s.uploads' % PROJECT_MODULE,
-    '%s.subtitles' % PROJECT_MODULE,
-    '%s.surveys' % PROJECT_MODULE,
-    '%s.roku' % PROJECT_MODULE,
-    '%s.cronlogger' % PROJECT_MODULE,
-    '%s.webrtc' % PROJECT_MODULE,
+    'airmozilla.base',
+    'airmozilla.main',
+    'airmozilla.authentication',
+    'airmozilla.manage',
+    'airmozilla.suggest',
+    'airmozilla.search',
+    'airmozilla.comments',
+    'airmozilla.uploads',
+    'airmozilla.starred',
+    'airmozilla.subtitles',
+    'airmozilla.surveys',
+    'airmozilla.roku',
+    'airmozilla.cronlogger',
+    'airmozilla.staticpages',
+    'airmozilla.new',
+    'airmozilla.popcorn',
 
+    'djcelery',
+    'kombu.transport.django',
     'bootstrapform',
     'sorl.thumbnail',
-    'south',
     'django.contrib.messages',
     'django.contrib.sites',
-    'django.contrib.flatpages',
+    'django.contrib.flatpages',  # this can be deleted later
     'cronjobs',
     'raven.contrib.django.raven_compat',
     'django_nose',  # deliberately making this the last one
 )
+
+# Absolute path to the directory that holds media.
+MEDIA_ROOT = path('media')
+
+# URL that handles the media served from MEDIA_ROOT. Make sure to use a
+# trailing slash if there is a path component (optional in other cases).
+MEDIA_URL = '/media/'
+
+# Absolute path to the directory static files should be collected to.
+STATIC_ROOT = path('static')
+
+# URL prefix for static files
+STATIC_URL = '/static/'
+
+COMPRESS_ROOT = STATIC_ROOT
+COMPRESS_CSS_FILTERS = (
+    'compressor.filters.css_default.CssAbsoluteFilter',
+    'compressor.filters.cssmin.CSSMinFilter'
+)
+
+STATICFILES_FINDERS = (
+    'django.contrib.staticfiles.finders.FileSystemFinder',
+    'django.contrib.staticfiles.finders.AppDirectoriesFinder',
+    'compressor.finders.CompressorFinder',
+)
+
+TEST_RUNNER = 'django_nose.NoseTestSuiteRunner'
 
 # Necessary so that test-utils doesn't try to execute some deprecated
 # functionality on the database connection.
@@ -57,9 +99,6 @@ SQL_RESET_SEQUENCES = False
 # We can use the simplest hasher because we never store usable passwords
 # thanks to Persona.
 PASSWORD_HASHERS = ('django.contrib.auth.hashers.UnsaltedMD5PasswordHasher',)
-
-# And this must be set according to funfactory but its value isn't important
-HMAC_KEYS = {'any': 'thing'}
 
 # our session storage is all memcache so using it instead of FallbackStorage
 # which uses CookieStorage by default so sessions are better
@@ -74,15 +113,17 @@ JINGO_EXCLUDE_APPS = [
     'browserid',
 ]
 
-# BrowserID configuration
-AUTHENTICATION_BACKENDS = [
-    'django.contrib.auth.backends.ModelBackend',
-    # this is the first one that matters
-    '%s.auth.backend.AirmozillaBrowserIDBackend' % PROJECT_MODULE,
+# Note that this is different when running tests.
+# You know in case you're debugging tests.
+AUTHENTICATION_BACKENDS = (
+    '%s.authentication.backend.AirmozillaBrowserIDBackend' % PROJECT_MODULE,
     # but we're keeping this in case people still have sessions
     # whose backend cookie points to this class path
     'django_browserid.auth.BrowserIDBackend',
-]
+    # Needed because the tests
+    # use self.client.login(username=..., password=...)
+    'django.contrib.auth.backends.ModelBackend',
+)
 
 # Domains allowed for log in
 ALLOWED_BID = (
@@ -98,57 +139,38 @@ LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGIN_REDIRECT_URL_FAILURE = '/login-failure/'
 
-TEMPLATE_CONTEXT_PROCESSORS += (
+TEMPLATE_LOADERS = (
+    'jingo.Loader',
+    'django.template.loaders.filesystem.Loader',
+    'django.template.loaders.app_directories.Loader',
+)
+
+TEMPLATE_CONTEXT_PROCESSORS = (
+    'django.contrib.auth.context_processors.auth',
+    'django.core.context_processors.debug',
+    'django.core.context_processors.media',
+    'django.core.context_processors.request',
+    'session_csrf.context_processor',
+    'django.contrib.messages.context_processors.messages',
+
     'airmozilla.manage.context_processors.badges',
+    'airmozilla.main.context_processors.base',
+    'airmozilla.main.context_processors.nav_bar',
+    'airmozilla.main.context_processors.search_form',
     'airmozilla.main.context_processors.sidebar',
     'airmozilla.main.context_processors.analytics',
     'airmozilla.main.context_processors.dev',
     'airmozilla.main.context_processors.browserid',
     'airmozilla.main.context_processors.faux_i18n',
     'airmozilla.main.context_processors.autocompeter',
+    'airmozilla.starred.context_processors.stars',
 )
 
 # Always generate a CSRF token for anonymous users.
 ANON_ALWAYS = True
 
-# Tells the extract script what files to look for L10n in and what function
-# handles the extraction. The Tower library expects this.
-# DOMAIN_METHODS['messages'] = [
-#     ('%s/**.py' % PROJECT_MODULE,
-#         'tower.management.commands.extract.extract_tower_python'),
-#     ('%s/**/templates/**.html' % PROJECT_MODULE,
-#         'tower.management.commands.extract.extract_tower_template'),
-#     ('templates/**.html',
-#         'tower.management.commands.extract.extract_tower_template'),
-# ],
-
-# # Use this if you have localizable HTML files:
-# DOMAIN_METHODS['lhtml'] = [
-#    ('**/templates/**.lhtml',
-#        'tower.management.commands.extract.extract_tower_template'),
-# ]
-
-# # Use this if you have localizable JS files:
-# DOMAIN_METHODS['javascript'] = [
-#    # Make sure that this won't pull in strings from external libraries you
-#    # may use.
-#    ('media/js/**.js', 'javascript'),
-# ]
-
-# This disables all mail_admins on all django.request errors.
-# We can do this because we use Sentry now instead
-LOGGING = {
-    'loggers': {
-        'django.request': {
-            'handlers': []
-        }
-    }
-}
-
 
 def JINJA_CONFIG():
-    # different from that in funfactory in that we don't want to
-    # load the `tower` extension
     config = {
         'extensions': [
             'jinja2.ext.do',
@@ -157,12 +179,11 @@ def JINJA_CONFIG():
         ],
         'finalize': lambda x: x if x is not None else '',
     }
-    #config = funfactory_JINJA_CONFIG()
-    #config['extensions'].remove('tower.template.i18n')
     return config
 
 
 def COMPRESS_JINJA2_GET_ENVIRONMENT():
+    """This function is automatically called by django-compressor"""
     from jingo import env
     from compressor.contrib.jinja2ext import CompressorExtension
     env.add_extension(CompressorExtension)
@@ -178,13 +199,13 @@ MIDDLEWARE_CLASSES = (
     'django.contrib.messages.middleware.MessageMiddleware',
     'commonware.middleware.FrameOptionsHeader',
     'airmozilla.manage.middleware.CacheBustingMiddleware',
-    'django.contrib.flatpages.middleware.FlatpageFallbackMiddleware'
+    'airmozilla.staticpages.middleware.StaticPageFallbackMiddleware',
 )
 
 # Enable timezone support for Django TZ-aware datetime objects
 # Times stored in the db as UTC; forms/templates as Pacific time
 USE_TZ = True
-TIME_ZONE = 'US/Pacific'
+TIME_ZONE = 'UTC'
 
 # Configuration for live/archiving events treatment
 # How much time, in minutes, an event shows as "live" before its start time.
@@ -201,9 +222,6 @@ CALENDAR_SIZE = 30
 # How many events should appear in the syndication feeds
 FEED_SIZE = 20
 
-# Use PNG for thumbnailing
-THUMBNAIL_FORMAT = 'PNG'
-
 # Number of upcoming events to display in the sidebar
 UPCOMING_SIDEBAR_COUNT = 5
 
@@ -219,21 +237,30 @@ SESSION_ENGINE = 'django.contrib.sessions.backends.cached_db'
 # Always use secure cookies
 COOKIES_SECURE = True
 
+# URL to connect to ElasticSearch
+ELASTICSEARCH_URL = 'http://localhost:9200/'
+
+# This is here in order to override the code related to elastic search
+# once things are said and done, ie. it works, this will be deleted
+USE_RELATED_CONTENT = False
+
+# Number of related events to display (max)
+RELATED_CONTENT_SIZE = 4
+
+# Boosting of title and tags, makes them matter more.
+RELATED_CONTENT_BOOST_TITLE = 1.0
+RELATED_CONTENT_BOOST_TAGS = -0.5
+
 # Defaults for Mozillians
 MOZILLIANS_API_BASE = 'https://mozillians.org'
 
 # API base URL
+VIDLY_BASE_URL = 'https://vid.ly'
 VIDLY_API_URL = 'http://m.vid.ly/api/'
 
 # Name of the default Channel
 DEFAULT_CHANNEL_SLUG = 'main'
 DEFAULT_CHANNEL_NAME = 'Main'
-
-# Default Location for events that are not upcoming
-DEFAULT_PRERECORDED_LOCATION = (
-    'Pre-recorded',  # name
-    'UTC'  # timezone
-)
 
 # Name of the default channel for Mozillians
 MOZILLIANS_CHANNEL_SLUG = 'mozillians'
@@ -248,9 +275,12 @@ URL_TRANSFORM_PASSWORDS = {}
 # Bit.ly URL shortener access token
 # See README about how to generate one
 BITLY_ACCESS_TOKEN = None
+BITLY_URL = 'https://api-ssl.bitly.com/v3/shorten'
 
 # Overridden so we can depend on more complex checking
-BROWSERID_VERIFY_CLASS = '%s.auth.views.CustomBrowserIDVerify' % PROJECT_MODULE
+BROWSERID_VERIFY_CLASS = (
+    '%s.authentication.views.CustomBrowserIDVerify' % PROJECT_MODULE
+)
 BROWSERID_REQUEST_ARGS = {'siteName': 'Air Mozilla'}
 
 # Name of the bucket where you upload all large videos
@@ -272,7 +302,7 @@ try:
     # ujson is a much faster json serializer
     # We tell the django-jsonview decorator to use it only if the ujson
     # package is installed and can be imported
-    import ujson
+    import ujson  # NOQA
     JSON_MODULE = 'ujson'
     JSON_USE_DJANGO_SERIALIZER = False
 except ImportError:
@@ -282,7 +312,7 @@ except ImportError:
 # When extracting screen captures, how many do we want to extract
 # for each video. This number is static independent of the length
 # of the video.
-SCREENCAPTURES_NO_PICTURES = 15
+SCREENCAPTURES_NO_PICTURES = 12
 
 # Name of the directory that gets created in the temp directory
 # that we fill with screencaps, and that gets later picked up
@@ -304,7 +334,62 @@ CONTRIBUTORS = (
     'koddsson',
     'KrystalYu',
     'anuragchaudhury',
+    'gloriadwomoh',
+    'a-buck',
+    'anjalymehla',
 )
 
 # Override this if you want to run the selenium based tests
 RUN_SELENIUM_TESTS = False
+
+
+# Whether we should use the new upload nav bar item.
+# Once the new upload is fully tested and ready to go live we might as
+# well delete this setting and remove the if-statement in
+# main.context_processors.nav_bar.
+USE_NEW_UPLOADER = True
+
+
+# When enabled, together with DEBUG==True, by visiting /god-mode/ you
+# can become anybody.
+# This is a good tool for doing testing without doing any Persona auth.
+GOD_MODE = False
+
+
+# If you want to disable all of the browser ID stuff, set this to True.
+# That means you won't be able to sign in at all. Or sign out.
+BROWSERID_DISABLED = False
+
+
+# How many times to try sending out an event tweet.
+MAX_TWEET_ATTEMPTS = 3
+
+
+# Where do we store jobs for the celery message queue
+BROKER_URL = 'django://'
+
+CELERY_ALWAYS_EAGER = False
+
+BROKER_CONNECTION_TIMEOUT = 0.1
+CELERYD_CONCURRENCY = 2
+CELERY_IGNORE_RESULT = True
+
+
+THUMBNAIL_BACKEND = 'optisorl.backend.OptimizingThumbnailBackend'
+
+
+# This turns of the thumbnail optimizer using pngquant so it's
+# not used unless you explicitely turn it on.
+PNGQUANT_LOCATION = None
+
+# The user group where being a member means you get an email about
+# all new event requests
+NOTIFICATIONS_GROUP_NAME = 'Event Notifications'
+
+
+# Adding prefix to airmozilla events index
+ELASTICSEARCH_PREFIX = 'airmozilla'
+ELASTICSEARCH_INDEX = 'events'
+
+# legacy junk in settings/local.py on production deployments
+BASE_PASSWORD_HASHERS = HMAC_KEYS = []

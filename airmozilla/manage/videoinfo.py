@@ -35,16 +35,62 @@ def _download_file(url, local_filename):
                 f.flush()
 
 
+# http://stackoverflow.com/a/377028/205832
+def which(program):  # pragma: no cover
+
+    def is_exe(fpath):
+        return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+
+    fpath, fname = os.path.split(program)
+    if fpath:
+        if is_exe(program):
+            return program
+    else:
+        for path in os.environ["PATH"].split(os.pathsep):
+            path = path.strip('"')
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+
+    return None
+
+
+def wrap_subprocess(command):
+    try:
+        return subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        ).communicate()
+    except OSError as exception:
+        # We need to modify the OSError to give us much better
+        # chances of debugging what went wrong.
+        # By knowing the command that errored, we can try to
+        # manually reproduce plainly on the command line.
+        message = (
+            '%s {command: %r}' % (
+                str(exception),
+                ' '.join(command)
+            ),
+        )
+        raise OSError(message)
+
+
 def fetch_duration(
     event, save=False, save_locally=False, verbose=False, use_https=True,
+    video_url=None
 ):
-    # The 'filepath' is only not None if you passed 'save_locally' as true
-    video_url, filepath = _get_video_url(
-        event,
-        use_https,
-        save_locally,
-        verbose=verbose
-    )
+    """return number of seconds or None"""
+    if video_url:
+        assert not save_locally
+    else:
+        # The 'filepath' is only not None if 'save_locally' is true
+        video_url, filepath = _get_video_url(
+            event,
+            use_https,
+            save_locally,
+            verbose=verbose
+        )
 
     # Some videos might return a 200 OK on a HEAD but are corrupted
     # and contains nothing
@@ -68,6 +114,8 @@ def fetch_duration(
             'FFMPEG_LOCATION',
             'ffmpeg'
         )
+        if verbose and not which(ffmpeg_location):
+            print ffmpeg_location, "is not an executable path"
         command = [
             ffmpeg_location,
             '-i',
@@ -77,11 +125,7 @@ def fetch_duration(
             print ' '.join(command)
 
         t0 = time.time()
-        out, err = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        ).communicate()
+        out, err = wrap_subprocess(command)
         t1 = time.time()
 
         if verbose:  # pragma: no cover
@@ -96,8 +140,10 @@ def fetch_duration(
             seconds = int(found[2])
             seconds += minutes * 60
             if save:
-                event.duration = seconds
-                event.save()
+                # Because it's not safe to keep the event object open too
+                # long, as it might have been edited in another thread,
+                # just do an update here.
+                Event.objects.filter(id=event.id).update(duration=seconds)
             if verbose:  # pragma: no cover
                 print show_duration(seconds, include_seconds=True)
             return seconds
@@ -112,8 +158,10 @@ def fetch_duration(
 
 def fetch_screencapture(
     event, save=False, save_locally=False, verbose=False, use_https=True,
-    import_=True, import_if_possible=False,
+    import_=True, import_if_possible=False, video_url=None,
+    set_first_available=False, import_immediately=False,
 ):
+    """return number of files that were successfully created or None"""
     assert event.duration, "no duration"
     # When you set `import_` to False, it creates the JPEGs and leaves
     # them there in a predictable location (so they can be swept up
@@ -126,12 +174,15 @@ def fetch_screencapture(
     if import_if_possible:
         import_ = False
 
-    video_url, filepath = _get_video_url(
-        event,
-        use_https,
-        save_locally,
-        verbose=verbose,
-    )
+    if video_url:
+        assert not save_locally
+    else:
+        video_url, filepath = _get_video_url(
+            event,
+            use_https,
+            save_locally,
+            verbose=verbose,
+        )
 
     if import_:
         save_dir = tempfile.mkdtemp('screencaptures-%s' % event.id)
@@ -171,8 +222,11 @@ def fetch_screencapture(
             'FFMPEG_LOCATION',
             'ffmpeg'
         )
+        if verbose and not which(ffmpeg_location):
+            print ffmpeg_location, "is not an executable path"
         incr = float(event.duration) / settings.SCREENCAPTURES_NO_PICTURES
         seconds = 0
+        created = 0
         t0 = time.time()
         number = 0
         output_template = os.path.join(save_dir, 'screencap-%02d.jpg')
@@ -193,14 +247,21 @@ def fetch_screencapture(
             ]
             if verbose:  # pragma: no cover
                 print ' '.join(command)
-            out, err = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
-            ).communicate()
+            out, err = wrap_subprocess(command)
             all_out.append(out)
             all_err.append(err)
             seconds += incr
+            if import_immediately:
+                created += _import_files(
+                    event,
+                    _get_files(save_dir),
+                    set_first_available=set_first_available,
+                    delete_opened_files=True,
+                )
+                # If 'set_first_available' was true, it should have at
+                # that point set the picture for that first one.
+                if created:
+                    set_first_available = False
         t1 = time.time()
 
         files = _get_files(save_dir)
@@ -213,11 +274,19 @@ def fetch_screencapture(
             )
 
         if import_ or import_if_possible:
-            if verbose and not files:  # pragma: no cover
+            if (
+                verbose and
+                not files and
+                not import_immediately
+            ):  # pragma: no cover
                 print "No output. Error:"
                 print '\n'.join(all_err)
             try:
-                created = _import_files(event, files)
+                created += _import_files(
+                    event,
+                    files,
+                    set_first_available=set_first_available
+                )
             except Exception:
                 delete_save_dir = False
                 raise
@@ -257,7 +326,7 @@ def _get_files(directory):
 
 
 def _get_video_url(event, use_https, save_locally, verbose=False):
-    if 'Vid.ly' in event.template.name:
+    if event.template and 'Vid.ly' in event.template.name:
         assert event.template_environment.get('tag'), "No Vid.ly tag value"
 
         token_protected = event.privacy != Event.PRIVACY_PUBLIC
@@ -273,7 +342,10 @@ def _get_video_url(event, use_https, save_locally, verbose=False):
             token_protected = submission.token_protection
 
         tag = event.template_environment['tag']
-        video_url = 'https://vid.ly/%s?content=video&format=' % tag
+        video_url = '%s/%s?content=video&format=' % (
+            settings.VIDLY_BASE_URL,
+            tag,
+        )
         if hd:
             video_url += 'hd_mp4'
         else:
@@ -281,7 +353,7 @@ def _get_video_url(event, use_https, save_locally, verbose=False):
 
         if token_protected:
             video_url += '&token=%s' % vidly.tokenize(tag, 60)
-    elif 'Ogg Video' in event.template.name:
+    elif event.template and 'Ogg Video' in event.template.name:
         assert event.template_environment.get('url'), "No Ogg Video url value"
         video_url = event.template_environment['url']
     else:
@@ -334,7 +406,12 @@ def _get_video_url(event, use_https, save_locally, verbose=False):
     return video_url, filepath
 
 
-def _import_files(event, files):
+def _import_files(
+    event,
+    files,
+    set_first_available=False,
+    delete_opened_files=False
+):
     created = 0
     # We sort and reverse by name so that the first instance
     # that is created is the oldest one.
@@ -343,12 +420,21 @@ def _import_files(event, files):
     # correct chronological order.
     for i, filepath in enumerate(reversed(sorted(files))):
         with open(filepath) as fp:
-            Picture.objects.create(
+            picture = Picture.objects.create(
                 file=File(fp),
                 notes="Screencap %d" % (len(files) - i,),
                 event=event,
             )
             created += 1
+            if set_first_available:
+                # Don't use instance save, but just do an update
+                # because this whole functionality is too slow to hang
+                # on to an object instance and sending a .save() might
+                # cause race conditions.
+                Event.objects.filter(id=event.id).update(picture=picture)
+                set_first_available = False
+        if delete_opened_files:
+            os.remove(filepath)
     return created
 
 
@@ -398,8 +484,7 @@ def _fetch(
 
         if (
             not (
-                event.template_environment.get('tag')
-                or
+                event.template_environment.get('tag') or
                 event.template_environment.get('url')
             )
         ):

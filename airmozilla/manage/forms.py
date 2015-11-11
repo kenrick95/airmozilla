@@ -1,14 +1,17 @@
 import re
 import datetime
+from collections import defaultdict
 
+import dateutil.parser
 import pytz
 
 from django import forms
+from django.db.models import Count
 from django.conf import settings
 from django.contrib.auth.models import User, Group
-from django.contrib.flatpages.models import FlatPage
 from django.utils.timezone import utc
-from funfactory.urlresolvers import reverse
+from django.utils.safestring import mark_safe
+from django.core.urlresolvers import reverse
 
 from slugify import slugify
 
@@ -29,10 +32,14 @@ from airmozilla.main.models import (
     EventAssignment,
     LocationDefaultEnvironment,
     RecruitmentMessage,
-    Picture
+    Picture,
+    Topic,
+    Chapter,
 )
 from airmozilla.comments.models import Discussion, Comment
 from airmozilla.surveys.models import Question, Survey
+from airmozilla.staticpages.models import StaticPage
+from airmozilla.base.helpers import show_duration_compact
 
 from .widgets import PictureWidget
 
@@ -76,6 +83,7 @@ class GroupEditForm(BaseModelForm):
 
     class Meta:
         model = Group
+        fields = ('name', 'permissions')
 
 
 class EventRequestForm(BaseModelForm):
@@ -92,7 +100,9 @@ class EventRequestForm(BaseModelForm):
             'additional_links': forms.Textarea(attrs={'rows': 3}),
             'remote_presenters': forms.Textarea(attrs={'rows': 3}),
             'start_time': forms.DateTimeInput(format='%Y-%m-%d %H:%M'),
-            'archive_time': forms.DateTimeInput(format='%Y-%m-%d %H:%M'),
+            'estimated_duration': forms.widgets.Select(
+                choices=Event.ESTIMATED_DURATION_CHOICES
+            ),
         }
         exclude = ('featured', 'status', 'archive_time', 'slug')
         # Fields specified to enforce order
@@ -100,6 +110,7 @@ class EventRequestForm(BaseModelForm):
             'title', 'placeholder_img', 'picture',
             'description',
             'short_description', 'location', 'start_time',
+            'estimated_duration',
             'channels', 'tags', 'call_info',
             'remote_presenters',
             'additional_links', 'privacy', 'popcorn_url'
@@ -107,11 +118,6 @@ class EventRequestForm(BaseModelForm):
 
     def __init__(self, *args, **kwargs):
         super(EventRequestForm, self).__init__(*args, **kwargs)
-        self.fields['location'].help_text = (
-            '<a href="%s" class="btn btn-default" target="_blank">'
-            '<i class="glyphicon glyphicon-plus-sign"></i>'
-            'New location'
-            '</a>' % reverse('manage:location_new'))
         self.fields['channels'].help_text = (
             '<a href="%s" class="btn btn-default" target="_blank">'
             '<i class="glyphicon glyphicon-plus-sign"></i>'
@@ -123,10 +129,20 @@ class EventRequestForm(BaseModelForm):
             approvals = event.approval_set.all()
             self.initial['approvals'] = [app.group for app in approvals]
             if event.location:
+                self.fields['start_time'].help_text = (
+                    'Time zone of this date is that of {0}.'.format(
+                        event.location.timezone
+                    )
+                )
                 # when the django forms present the start_time form field,
                 # it's going to first change it to UTC, then strftime it
                 self.initial['start_time'] = (
                     event.location_time.replace(tzinfo=utc)
+                )
+            else:
+                self.fields['start_time'].help_text = (
+                    'Since there is no location, time zone of this date '
+                    ' is UTC.'
                 )
 
             if event.pk:
@@ -156,8 +172,8 @@ class EventRequestForm(BaseModelForm):
         return slug
 
     @staticmethod
-    def _check_flatpage_slug(slug):
-        if FlatPage.objects.filter(url__startswith='/%s' % slug).count():
+    def _check_staticpage_slug(slug):
+        if StaticPage.objects.filter(url__startswith='/%s' % slug).count():
             raise forms.ValidationError(
                 "The default slug for event would clash with an existing "
                 "static page with the same URL. It might destroy existing "
@@ -169,12 +185,12 @@ class EventRequestForm(BaseModelForm):
         if data.get('title') and not data.get('slug'):
             # this means you have submitted a form without being explicit
             # about what the slug will be
-            self._check_flatpage_slug(slugify(data.get('title')).lower())
+            self._check_staticpage_slug(slugify(data.get('title')).lower())
         elif data.get('slug'):
             # are you trying to change it?
             if self.instance.slug != data['slug']:
                 # apparently, you want to change to a new slug
-                self._check_flatpage_slug(data['slug'])
+                self._check_staticpage_slug(data['slug'])
         return data
 
 
@@ -195,10 +211,13 @@ class EventEditForm(EventRequestForm):
         exclude = ('archive_time',)
         # Fields specified to enforce order
         fields = (
-            'title', 'slug', 'status', 'privacy', 'featured', 'template',
+            'title', 'slug', 'status', 'privacy', 'curated_groups',
+            'featured', 'template',
             'template_environment', 'placeholder_img', 'picture',
             'location',
-            'description', 'short_description', 'start_time', 'archive_time',
+            'description', 'short_description', 'start_time',
+            'estimated_duration',
+            'archive_time',
             'channels', 'tags',
             'call_info', 'additional_links', 'remote_presenters',
             'approvals',
@@ -209,6 +228,7 @@ class EventEditForm(EventRequestForm):
 
     def __init__(self, *args, **kwargs):
         super(EventEditForm, self).__init__(*args, **kwargs)
+
         if 'pin' in self.fields:
             self.fields['pin'].help_text = (
                 "Use of pins is deprecated. Use Curated groups instead."
@@ -218,13 +238,6 @@ class EventEditForm(EventRequestForm):
             self.fields['recruitmentmessage'].required = False
             self.fields['recruitmentmessage'].label = 'Recruitment message'
 
-        self.fields.keyOrder.pop(
-            self.fields.keyOrder.index('curated_groups')
-        )
-        self.fields.keyOrder.insert(
-            self.fields.keyOrder.index('privacy') + 1,
-            'curated_groups'
-        )
         self.fields['location'].queryset = (
             Location.objects.filter(is_active=True).order_by('name')
         )
@@ -232,6 +245,20 @@ class EventEditForm(EventRequestForm):
             # Checking for id because it might be an instance but never
             # been saved before.
             self.fields['picture'].widget = PictureWidget(self.instance)
+            # make the list of approval objects depend on requested approvals
+            # print Group.approval_set.filter(event=self.instance)
+            group_ids = [
+                x[0] for x in
+                Approval.objects
+                .filter(event=self.instance).values_list('group')
+            ]
+            self.fields['approvals'].queryset = Group.objects.filter(
+                id__in=group_ids
+            )
+            # If the event has a duration, it doesn't make sense to
+            # show the estimated_duration widget.
+            if self.instance.duration:
+                del self.fields['estimated_duration']
         elif self.initial.get('picture'):
             self.fields['picture'].widget = PictureWidget(
                 Picture.objects.get(id=self.initial['picture']),
@@ -267,6 +294,7 @@ class EventExperiencedRequestForm(EventEditForm):
             'template_environment', 'placeholder_img', 'picture',
             'description',
             'short_description', 'location', 'start_time',
+            'estimated_duration',
             'channels', 'tags', 'call_info',
             'additional_links', 'remote_presenters',
             'approvals', 'pin', 'popcorn_url', 'recruitmentmessage'
@@ -278,6 +306,32 @@ class EventArchiveForm(BaseModelForm):
     class Meta(EventRequestForm.Meta):
         exclude = ()
         fields = ('template', 'template_environment')
+
+
+class EventArchiveTimeForm(BaseModelForm):
+
+    class Meta(EventRequestForm.Meta):
+        exclude = ()
+        fields = ('archive_time',)
+
+    def __init__(self, *args, **kwargs):
+        super(EventArchiveTimeForm, self).__init__(*args, **kwargs)
+        self.fields['archive_time'].help_text = (
+            "Input timezone is <b>UTC</b>"
+        )
+        if self.initial['archive_time']:
+            # Force it to a UTC string so Django doesn't convert it
+            # to a timezone-less string in the settings.TIME_ZONE timezone.
+            self.initial['archive_time'] = (
+                self.initial['archive_time'].strftime('%Y-%m-%d %H:%M:%S')
+            )
+
+    def clean_archive_time(self):
+        value = self.cleaned_data['archive_time']
+        # force it back to UTC
+        if value:
+            value = value.replace(tzinfo=utc)
+        return value
 
 
 class EventTweetForm(BaseModelForm):
@@ -299,7 +353,11 @@ class EventTweetForm(BaseModelForm):
     def __init__(self, event, *args, **kwargs):
         super(EventTweetForm, self).__init__(*args, **kwargs)
         self.fields['text'].help_text = (
-            '<b class="char-counter">140</b> characters left'
+            '<b class="char-counter">140</b> characters left. '
+            '<span class="char-counter-warning"><b>Note!</b> Sometimes '
+            'Twitter can count it as longer than it appears if you '
+            'include a URL. '
+            'It\'s usually best to leave a little room.</span>'
         )
         # it's a NOT NULL field but it defaults to NOW()
         # in the views code
@@ -316,9 +374,13 @@ class EventTweetForm(BaseModelForm):
                 % pack_tags([x.name for x in event.tags.all()])
             )
 
-        if event.placeholder_img:
+        if event.placeholder_img or event.picture:
             from airmozilla.main.helpers import thumbnail
-            thumb = thumbnail(event.placeholder_img, '100x100')
+            if event.picture:
+                pic = event.picture.file
+            else:
+                pic = event.placeholder_img
+            thumb = thumbnail(pic, '160x90', crop='center')
 
             self.fields['include_placeholder'].help_text = (
                 '<img src="%(url)s" alt="placeholder" class="thumbnail" '
@@ -352,6 +414,21 @@ class ChannelForm(BaseModelForm):
                 in self.fields['parent'].choices
                 if x != kwargs['instance'].pk
             ]
+        self.fields['cover_art'].help_text = (
+            "The cover art for podcasts needs to be at least 1400x1400 "
+            "pixels. Smaller versions that are needed will be derived "
+            "from this same image."
+        )
+
+    def clean(self):
+        cleaned_data = super(ChannelForm, self).clean()
+        if 'always_show' in cleaned_data and 'never_show' in cleaned_data:
+            # if one is true, the other one can't be
+            if cleaned_data['always_show'] and cleaned_data['never_show']:
+                raise forms.ValidationError(
+                    "Can't both be on always and never shown"
+                )
+        return cleaned_data
 
 
 class TemplateEditForm(BaseModelForm):
@@ -360,6 +437,48 @@ class TemplateEditForm(BaseModelForm):
         widgets = {
             'content': forms.Textarea(attrs={'rows': 20})
         }
+        fields = (
+            'name',
+            'content',
+            'default_popcorn_template',
+            'default_archive_template',
+        )
+
+
+class TemplateMigrateForm(BaseForm):
+    template = forms.ModelChoiceField(
+        widget=forms.widgets.RadioSelect(),
+        queryset=Template.objects.all()
+
+    )
+
+    def __init__(self, *args, **kwargs):
+        self.instance = kwargs.pop('instance')
+        super(TemplateMigrateForm, self).__init__(*args, **kwargs)
+
+        scheduled = defaultdict(int)
+        removed = defaultdict(int)
+
+        events = Event.objects.all()
+        for each in events.values('template').annotate(Count('template')):
+            scheduled[each['template']] = each['template__count']
+
+        events = events.filter(status=Event.STATUS_REMOVED)
+        for each in events.values('template').annotate(Count('template')):
+            removed[each['template']] = each['template__count']
+
+        choices = [('', '---------')]
+        other_templates = Template.objects.exclude(id=self.instance.id)
+        for template in other_templates.order_by('name'):
+            choices.append((
+                template.id,
+                '{0} ({1} events, {2} removed)'.format(
+                    template.name,
+                    scheduled[template.id],
+                    removed[template.id],
+                )
+            ))
+        self.fields['template'].choices = choices
 
 
 class RecruitmentMessageEditForm(BaseModelForm):
@@ -369,6 +488,56 @@ class RecruitmentMessageEditForm(BaseModelForm):
             'notes': forms.Textarea(attrs={'rows': 3})
         }
         exclude = ('modified_user', 'created')
+
+
+class EventChapterEditForm(BaseModelForm):
+    timestamp = forms.CharField(widget=forms.widgets.TextInput(
+        attrs={
+            'placeholder': 'For example: 22m0s'
+        }
+    ))
+
+    class Meta:
+        model = Chapter
+        widgets = {
+            'text': forms.widgets.TextInput()
+        }
+        exclude = ('user', 'created', 'event')
+
+    def __init__(self, *args, **kwargs):
+        self.max_timestamp = None
+        if kwargs.get('instance'):
+            self.max_timestamp = kwargs['instance'].event.duration
+            if kwargs['instance'].timestamp:
+                kwargs['instance'].timestamp = show_duration_compact(
+                    kwargs['instance'].timestamp
+                )
+        super(EventChapterEditForm, self).__init__(*args, **kwargs)
+
+    def clean_timestamp(self):
+        value = self.cleaned_data['timestamp'].strip().replace(' ', '')
+        hours = re.findall('(\d{1,2})h', value)
+        minutes = re.findall('(\d{1,2})m', value)
+        seconds = re.findall('(\d{1,2})s', value)
+        if seconds:
+            seconds = int(seconds[0])
+        else:
+            seconds = 0
+        if minutes:
+            minutes = int(minutes[0])
+        else:
+            minutes = 0
+        if hours:
+            hours = int(hours[0])
+        else:
+            hours = 0
+        total = seconds + minutes * 60 + hours * 60 * 60
+        if not total:
+            raise forms.ValidationError('Must be greater than zero')
+        if self.max_timestamp:
+            if total >= self.max_timestamp:
+                raise forms.ValidationError('Longer than video duration')
+        return total
 
 
 class SurveyEditForm(BaseModelForm):
@@ -410,6 +579,7 @@ class LocationEditForm(BaseModelForm):
 
     class Meta:
         model = Location
+        fields = ('name', 'timezone', 'is_active', 'regions')
 
 
 class LocationDefaultEnvironmentForm(BaseModelForm):
@@ -417,12 +587,29 @@ class LocationDefaultEnvironmentForm(BaseModelForm):
     class Meta:
         model = LocationDefaultEnvironment
         fields = ('privacy', 'template', 'template_environment')
+        widgets = {
+            'template_environment': forms.widgets.Textarea()
+        }
 
 
 class RegionEditForm(BaseModelForm):
 
     class Meta:
         model = Region
+        fields = ('name', 'is_active')
+
+
+class TopicEditForm(BaseModelForm):
+
+    class Meta:
+        model = Topic
+        fields = ('topic', 'sort_order', 'groups', 'is_active')
+
+    def __init__(self, *args, **kwargs):
+        super(TopicEditForm, self).__init__(*args, **kwargs)
+        self.fields['topic'].widget = forms.widgets.TextInput(attrs={
+            'placeholder': 'for example Partners for Firefox OS'
+        })
 
 
 class ApprovalForm(BaseModelForm):
@@ -434,10 +621,72 @@ class ApprovalForm(BaseModelForm):
         }
 
 
-class FlatPageEditForm(BaseModelForm):
+class HeadersField(forms.CharField):
+    widget = forms.widgets.Textarea
+
+    def __init__(self, *args, **kwargs):
+        super(HeadersField, self).__init__(*args, **kwargs)
+        self.help_text = self.help_text or mark_safe(
+            "For example <code>Content-Type: text/xml</code>"
+        )
+
+    def to_python(self, value):
+        if not value:
+            return {}
+        headers = {}
+        for line in [x.strip() for x in value.splitlines() if x.strip()]:
+            try:
+                key, value = line.split(':', 1)
+            except ValueError:
+                raise forms.ValidationError(line)
+            headers[key.strip()] = value.strip()
+        return headers
+
+    def prepare_value(self, value):
+        if isinstance(value, basestring):
+            # already prepared
+            return value
+        elif value is None:
+            return ''
+        out = []
+        for key in sorted(value):
+            out.append('%s: %s' % (key, value[key]))
+        return '\n'.join(out)
+
+    def widget_attrs(self, widget):
+        attrs = super(HeadersField, self).widget_attrs(widget)
+        if 'rows' not in attrs:
+            attrs['rows'] = 3
+        return attrs
+
+
+class StaticPageEditForm(BaseModelForm):
+    headers = HeadersField(required=False)
+
     class Meta:
-        model = FlatPage
-        fields = ('url', 'title', 'content')
+        model = StaticPage
+        fields = (
+            'url',
+            'title',
+            'content',
+            'privacy',
+            'template_name',
+            'allow_querystring_variables',
+            'headers',
+        )
+
+    def __init__(self, *args, **kwargs):
+        super(StaticPageEditForm, self).__init__(*args, **kwargs)
+        self.fields['url'].label = 'URL'
+        self.fields['template_name'].label = 'Template'
+        choices = (
+            ('', 'Default'),
+            ('staticpages/nosidebar.html', 'Default (but no sidebar)'),
+            ('staticpages/blank.html', 'Blank (no template wrapping)'),
+        )
+        self.fields['template_name'].widget = forms.widgets.Select(
+            choices=choices
+        )
 
     def clean_url(self):
         value = self.cleaned_data['url']
@@ -458,6 +707,16 @@ class FlatPageEditForm(BaseModelForm):
                 )
 
         return value
+
+    def clean(self):
+        cleaned_data = super(StaticPageEditForm, self).clean()
+        if 'url' in cleaned_data and 'privacy' in cleaned_data:
+            if cleaned_data['url'].startswith('sidebar_'):
+                if cleaned_data['privacy'] != Event.PRIVACY_PUBLIC:
+                    raise forms.ValidationError(
+                        "If a sidebar the privacy must be public"
+                    )
+        return cleaned_data
 
 
 class VidlyURLForm(forms.Form):
@@ -520,17 +779,29 @@ class TagEditForm(BaseModelForm):
 
     class Meta:
         model = Tag
+        fields = ('name',)
+
+    def clean_name(self):
+        value = self.cleaned_data['name']
+        other_tags = Tag.objects.filter(name__iexact=value)
+        if self.instance:
+            other_tags = other_tags.exclude(id=self.instance.id)
+        if other_tags.exists():
+            raise forms.ValidationError(
+                'Used by another tag. Consider merging.'
+            )
+        return value
 
 
-class TagMergeForm(BaseForm):
+class TagMergeRepeatedForm(BaseForm):
 
-    name = forms.ChoiceField(
+    keep = forms.ChoiceField(
         label='Name to keep',
         widget=forms.widgets.RadioSelect()
     )
 
-    def __init__(self, name, *args, **kwargs):
-        super(TagMergeForm, self).__init__(*args, **kwargs)
+    def __init__(self, this_tag, *args, **kwargs):
+        super(TagMergeRepeatedForm, self).__init__(*args, **kwargs)
 
         def describe_tag(tag):
             count = Event.objects.filter(tags=tag).count()
@@ -540,10 +811,30 @@ class TagMergeForm(BaseForm):
                 tmpl = '%s (%d times)'
             return tmpl % (tag.name, count)
 
-        self.fields['name'].choices = [
-            (x.name, describe_tag(x))
-            for x in Tag.objects.filter(name__iexact=name)
+        self.fields['keep'].choices = [
+            (x.id, describe_tag(x))
+            for x in Tag.objects.filter(name__iexact=this_tag.name)
         ]
+
+
+class TagMergeForm(BaseForm):
+
+    name = forms.CharField()
+
+    def __init__(self, this_tag, *args, **kwargs):
+        super(TagMergeForm, self).__init__(*args, **kwargs)
+        self.this_tag = this_tag
+
+    def clean_name(self):
+        value = self.cleaned_data['name']
+        other_tags = (
+            Tag.objects
+            .filter(name__iexact=value)
+            .exclude(id=self.this_tag.id)
+        )
+        if not other_tags.exists():
+            raise forms.ValidationError('Not found')
+        return value
 
 
 class VidlyResubmitForm(VidlyURLForm):
@@ -701,7 +992,12 @@ class PictureForm(BaseModelForm):
 
     class Meta:
         model = Picture
-        fields = ('file', 'notes')
+        fields = ('file', 'notes', 'default_placeholder', 'is_active')
+        help_texts = {
+            'is_active': (
+                "Only active pictures is a choice when users pick picture."
+            ),
+        }
 
 
 class AutocompeterUpdateForm(BaseForm):
@@ -720,3 +1016,89 @@ class AutocompeterUpdateForm(BaseForm):
             print "Minutes", int(value)
             value = datetime.timedelta(minutes=int(value))
         return value
+
+
+class ISODateTimeField(forms.DateTimeField):
+
+    def strptime(self, value, __):
+        return dateutil.parser.parse(value)
+
+
+class EventsDataForm(BaseForm):
+
+    since = ISODateTimeField(required=False)
+
+
+class TriggerErrorForm(BaseForm):
+
+    message = forms.CharField()
+    capture_with_raven = forms.BooleanField(required=False)
+
+
+class ReindexRelatedContentForm(BaseForm):
+
+    all = forms.BooleanField(required=False)
+    since = forms.IntegerField(
+        required=False,
+        help_text='minutes',
+        widget=forms.widgets.NumberInput(attrs={
+            'style': 'width: 200px',
+        })
+    )
+    delete_and_recreate = forms.BooleanField(required=False)
+
+
+class RelatedContentTestingForm(BaseForm):
+
+    event = forms.CharField(
+        help_text="Title, slug or ID"
+    )
+    use_title = forms.BooleanField(required=False)
+    boost_title = forms.FloatField()
+    use_tags = forms.BooleanField(required=False)
+    boost_tags = forms.FloatField()
+    size = forms.IntegerField()
+
+    def clean_event(self):
+        event = self.cleaned_data['event'].strip()
+        try:
+            if not event.isdigit():
+                raise Event.DoesNotExist
+            return Event.objects.get(id=event)
+
+        except Event.DoesNotExist:
+            try:
+                return Event.objects.get(slug__iexact=event)
+            except Event.DoesNotExist:
+                try:
+                    return Event.objects.get(title__iexact=event)
+                except Event.DoesNotExist:
+                    raise forms.ValidationError("Event can't be found")
+                except Event.MultipleObjectsReturned:
+                    raise forms.ValidationError(
+                        'Event title ambiguous. Use slug or ID.'
+                    )
+
+    def clean(self):
+        cleaned_data = super(RelatedContentTestingForm, self).clean()
+        if 'use_title' in cleaned_data and 'use_tags' in cleaned_data:
+            if not (cleaned_data['use_title'] or cleaned_data['use_tags']):
+                raise forms.ValidationError(
+                    'One of Use title OR Use tags must be chosen'
+                )
+        return cleaned_data
+
+
+class EventDurationForm(BaseModelForm):
+
+    class Meta:
+        model = Event
+        fields = ('duration',)
+
+    def __init__(self, *args, **kwargs):
+        super(EventDurationForm, self).__init__(*args, **kwargs)
+        self.fields['duration'].required = False
+        self.fields['duration'].help_text = (
+            "Note! If you remove this value (make it blank), it will be "
+            "unset and automatically be re-evaluated."
+        )

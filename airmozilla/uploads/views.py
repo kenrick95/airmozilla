@@ -5,6 +5,7 @@ import hmac
 import urllib
 import os
 import time
+import uuid
 
 from django import http
 from django.shortcuts import render
@@ -14,14 +15,15 @@ from django.views.decorators.http import require_POST
 from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.conf import settings
+from django.db import transaction
+from django.core.urlresolvers import reverse
 
 import requests
-from funfactory.urlresolvers import reverse
-from slugify import slugify
 from jsonview.decorators import json_view
 
 from airmozilla.main.models import Event, SuggestedEvent
 from .models import Upload
+from . import forms
 
 
 @login_required
@@ -70,10 +72,12 @@ def sign(request):
         return http.HttpResponseBadRequest('Missing s3_object_name')
 
     now = datetime.datetime.utcnow()
-    name, ext = os.path.splitext(object_name)
-    name = slugify(name)
-    name = hashlib.md5(name).hexdigest()[:5]
-    name = '%s-%s-%s' % (request.user.id, name, now.strftime('%H%M%S'))
+    _, ext = os.path.splitext(object_name)
+    name = uuid.uuid4().hex[:13]
+    name = '%s-%s' % (
+        now.strftime('%Y%m%d%H%M%S'),
+        name
+    )
     ext = ext.lower()
     directory = now.strftime('%Y/%m/%d')
     object_name = os.path.join(directory, '%s%s' % (name, ext))
@@ -99,6 +103,8 @@ def sign(request):
     url = 'https://%s.s3.amazonaws.com/%s' % (S3_UPLOAD_BUCKET, object_name)
     context = {}
     context['url'] = url
+    context['file_name'] = file_name
+    context['mime_type'] = mime_type
     signed_request = (
         '%s?AWSAccessKeyId=%s&Expires=%d&Signature=%s' % (
             url,
@@ -119,10 +125,13 @@ def sign(request):
 @json_view
 @login_required
 @require_POST
+@transaction.atomic
 def save(request):
-    url = request.POST.get('url')
-    if not url:
-        return http.HttpResponseBadRequest('Not a valid URL')
+    form = forms.SaveForm(request.POST)
+    if not form.is_valid():
+        return http.HttpResponseBadRequest(str(form.errors))
+    url = form.cleaned_data['url']
+    upload_time = form.cleaned_data['upload_time']
     cache_key = 'length_%s' % hashlib.md5(url).hexdigest()
     size = cache.get(cache_key)
     if not size:
@@ -143,7 +152,8 @@ def save(request):
         url=url,
         size=size,
         file_name=file_name,
-        mime_type=mime_type
+        mime_type=mime_type,
+        upload_time=upload_time,
     )
     messages.info(
         request,

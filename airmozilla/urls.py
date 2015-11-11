@@ -2,7 +2,11 @@ from django.conf import settings
 from django.conf.urls import patterns, include
 from django.contrib.staticfiles.urls import staticfiles_urlpatterns
 
-from funfactory.monkeypatches import patch
+import djcelery
+
+from airmozilla.base.monkeypatches import patch
+
+
 patch()
 
 
@@ -17,15 +21,18 @@ urlpatterns = patterns(
     (r'^requests/', include('airmozilla.suggest.urls', namespace='suggest')),
     (r'^search/', include('airmozilla.search.urls', namespace='search')),
     (r'^comments/', include('airmozilla.comments.urls', namespace='comments')),
+    (r'^starred/', include('airmozilla.starred.urls', namespace='starred')),
     (r'^surveys/', include('airmozilla.surveys.urls', namespace='surveys')),
     (r'^uploads/', include('airmozilla.uploads.urls', namespace='uploads')),
     (r'^roku/', include('airmozilla.roku.urls', namespace='roku')),
-    (r'^mozillian/', include('airmozilla.webrtc.urls', namespace='webrtc')),
+    (r'^popcorn/', include('airmozilla.popcorn.urls', namespace='popcorn')),
+    (r'^new/', include('airmozilla.new.urls', namespace='new')),
     ('^(?P<path>favicon\.ico)$', 'django.views.static.serve',
      {'document_root': settings.ROOT + '/airmozilla/base/static/img'}),
     (r'', include('django_browserid.urls')),
     (r'', include('airmozilla.main.urls', namespace='main')),
-    ('^pages/', include('django.contrib.flatpages.urls')),
+    ('^pages/', include('airmozilla.staticpages.urls',
+     namespace='staticpages')),
 )
 
 # In DEBUG mode, serve media files through Django.
@@ -39,3 +46,6 @@ if settings.DEBUG:  # pragma: no cover
         }),
     )
     urlpatterns += staticfiles_urlpatterns()
+
+
+djcelery.setup_loader()

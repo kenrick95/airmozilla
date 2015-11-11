@@ -11,15 +11,14 @@ class TestAbsStaticHelpers(DjangoTestCase):
     def tearDown(self):
         super(TestAbsStaticHelpers, self).tearDown()
 
-        # This is necessary because funfactory (where we use the static()
-        # helper function) uses staticfiles_storage which gets lazy loaded
-        # and remembered once in memory.
+        # This is necessary because airmozilla.base.utils (where we use
+        # the static() helper function) uses staticfiles_storage which
+        # gets lazy loaded and remembered once in memory.
         # By overriding it like this it means we can change settings
         # and have it reflected immediately
-        from funfactory import helpers
+        from airmozilla.base import utils
         from django.contrib.staticfiles.storage import ConfiguredStorage
-        helpers.staticfiles_storage = ConfiguredStorage()
-        # cache.clear()
+        utils.staticfiles_storage = ConfiguredStorage()
 
     def test_abs_static(self):
         context = {}
@@ -65,7 +64,7 @@ class TestAbsStaticHelpers(DjangoTestCase):
     def test_abs_static_with_STATIC_URL_with_https(self):
         context = {}
         context['request'] = RequestFactory().get('/')
-        context['request']._is_secure = lambda: True
+        context['request'].is_secure = lambda: True
         assert context['request'].is_secure()
 
         with self.settings(STATIC_URL='//my.cdn.com/static/'):
@@ -102,3 +101,9 @@ class TestDuration(DjangoTestCase):
 
         result = show_duration(49)
         eq_(result, "49 seconds")
+
+        result = show_duration(66.61)
+        eq_(result, '1 minute')
+
+        result = show_duration(66.61, include_seconds=True)
+        eq_(result, '1 minute 6 seconds')

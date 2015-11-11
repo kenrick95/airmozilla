@@ -1,11 +1,11 @@
+import os
 import json
 
 from nose.tools import eq_, ok_
 
 from django.core.files import File
 from django.conf import settings
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Event, Picture
 from .base import ManageTestCase
@@ -13,8 +13,8 @@ from .base import ManageTestCase
 
 class TestPictureGallery(ManageTestCase):
 
-    main_image = 'airmozilla/manage/tests/firefox.png'
     other_image = 'airmozilla/manage/tests/other_logo.png'
+    jpeg_image = 'airmozilla/manage/tests/tucker.jpg'
 
     def test_load_gallery(self):
         url = reverse('manage:picturegallery')
@@ -121,6 +121,34 @@ class TestPictureGallery(ManageTestCase):
         picture = Picture.objects.get(id=picture.id)
         eq_(picture.notes, 'Other notes')
 
+    def test_picture_edit_set_new_default_placeholder(self):
+        with open(self.main_image) as fp:
+            Picture.objects.create(
+                file=File(fp),
+                notes="Initial one",
+                default_placeholder=True
+            )
+
+        with open(self.main_image) as fp:
+            picture = Picture.objects.create(
+                file=File(fp),
+                notes="Some notes"
+            )
+
+        url = reverse('manage:picture_edit', args=(picture.id,))
+        with open(self.other_image) as fp:
+            response = self.client.post(url, {
+                'file': fp,
+                'notes': 'Other notes',
+                'default_placeholder': True,
+            })
+            eq_(response.status_code, 302)
+
+        picture = Picture.objects.get(id=picture.id)
+        eq_(picture.notes, 'Other notes')
+        ok_(picture.default_placeholder)
+        eq_(Picture.objects.filter(default_placeholder=True).count(), 1)
+
     def test_picture_delete(self):
         with open(self.main_image) as fp:
             picture = Picture.objects.create(
@@ -214,7 +242,20 @@ class TestPictureGallery(ManageTestCase):
         assert picture.size
         eq_(picture.modified_user, self.user)
 
+    def test_picture_add_with_event(self):
+        event = Event.objects.get(title='Test event')
+        url = reverse('manage:event_edit', args=(event.id,))
+        response = self.client.get(url, {'event': event.id})
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
+
+        url = reverse('manage:picture_add')
+        response = self.client.get(url, {'event': event.id})
+        eq_(response.status_code, 200)
+        ok_('?event=%d' % event.id in response.content)
+
     def test_redirect_picture_thumbnail(self):
+        assert self.main_image.endswith('.png')
         with open(self.main_image) as fp:
             picture = Picture.objects.create(
                 file=File(fp),
@@ -225,6 +266,31 @@ class TestPictureGallery(ManageTestCase):
         response = self.client.get(url)
         eq_(response.status_code, 302)
         ok_(settings.MEDIA_URL in response['Location'])
+        ok_(response['Location'].endswith('.png'))
+        thumbnail_path = os.path.join(
+            settings.MEDIA_ROOT,
+            response['Location'].split(settings.MEDIA_URL)[1]
+        )
+        ok_(os.path.isfile(thumbnail_path))
+
+    def test_redirect_picture_thumbnail_jpeg(self):
+        assert self.jpeg_image.endswith('.jpg')
+        with open(self.jpeg_image) as fp:
+            picture = Picture.objects.create(
+                file=File(fp),
+                notes="Some notes"
+            )
+
+        url = reverse('manage:redirect_picture_thumbnail', args=(picture.id,))
+        response = self.client.get(url)
+        eq_(response.status_code, 302)
+        ok_(settings.MEDIA_URL in response['Location'])
+        ok_(response['Location'].endswith('.jpg'))
+        thumbnail_path = os.path.join(
+            settings.MEDIA_ROOT,
+            response['Location'].split(settings.MEDIA_URL)[1]
+        )
+        ok_(os.path.isfile(thumbnail_path))
 
     def test_picture_event_associate(self):
         with open(self.main_image) as fp:

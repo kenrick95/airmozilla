@@ -5,15 +5,15 @@ from django.contrib import messages
 from django.shortcuts import render, redirect, get_object_or_404
 from django.utils import timezone
 from django.db import transaction
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
     Template,
     SuggestedEvent,
     SuggestedEventComment,
-    LocationDefaultEnvironment
+    LocationDefaultEnvironment,
+    Approval,
 )
 from airmozilla.manage import forms
 from airmozilla.manage import sending
@@ -44,13 +44,18 @@ def suggestions(request):
 
 @staff_required
 @permission_required('main.add_event')
-@transaction.commit_on_success
+@transaction.atomic
 def suggestion_review(request, id):
     event = get_object_or_404(SuggestedEvent, pk=id)
     real_event_form = None
     comment_form = forms.SuggestedEventCommentForm()
 
     if request.method == 'POST':
+
+        if request.POST.get('unbounce'):
+            event.submitted = timezone.now()
+            event.save()
+            return redirect('manage:suggestion_review', event.pk)
 
         if not event.submitted:
             return http.HttpResponseBadRequest('Not submitted')
@@ -113,6 +118,8 @@ def suggestion_review(request, id):
                     'call_info': event.call_info,
                     'privacy': event.privacy,
                     'popcorn_url': event.popcorn_url,
+                    'estimated_duration': event.estimated_duration,
+                    'topics': [x.pk for x in event.topics.all()],
                 }
                 if dict_event['popcorn_url'] == 'https://':
                     dict_event['popcorn_url'] = ''
@@ -131,6 +138,7 @@ def suggestion_review(request, id):
                     if real.popcorn_url and not event.upcoming:
                         real.archive_time = real.start_time
                     if event.upcoming:
+                        real.status = Event.STATUS_SUBMITTED
                         # perhaps we have a default location template
                         # environment
                         if real.location:
@@ -153,9 +161,27 @@ def suggestion_review(request, id):
                     real.save()
                     [real.tags.add(x) for x in event.tags.all()]
                     [real.channels.add(x) for x in event.channels.all()]
+                    [real.topics.add(x) for x in event.topics.all()]
                     event.accepted = real
                     event.save()
 
+                    # create the necessary approval bits
+                    if event.privacy == Event.PRIVACY_PUBLIC:
+                        groups = []
+                        for topic in real.topics.filter(is_active=True):
+                            for group in topic.groups.all():
+                                if group not in groups:
+                                    groups.append(group)
+                        for group in groups:
+                            Approval.objects.create(
+                                event=real,
+                                group=group,
+                            )
+                            sending.email_about_approval_requested(
+                                real,
+                                group,
+                                request
+                            )
                     try:
                         discussion = SuggestedDiscussion.objects.get(
                             event=event,

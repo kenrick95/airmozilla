@@ -18,11 +18,18 @@
   th.buttons, td.buttons { width: 280px; }
   form.resubmit { display: none; }
   div.info { display: none; }
+  td span.errored { color: darkred; }
+  td span.finished { color: green; }
+  .timings-link { float: right; }
   </style>
 {% endblock %}
 
 
 {% block manage_content %}
+
+<h4 class="timings-link">
+  <a href="{{ url('manage:vidly_media_timings')}}">Vid.ly Media Timings</a>
+</h4>
 
 <p>
   These are all the events that use a template that has the
@@ -63,7 +70,7 @@
 
   {{ bootstrapform(vidly_resubmit_form) }}
   {% set submit_text = 'Re-submit' %}
-  {% include 'manage/_form_buttons.html' %}
+  {% include "manage/_form_buttons.html" %}
   </form>
 
   <form action="" method="post">
@@ -73,6 +80,7 @@
       <tr>
         <th>Event</th>
         {% if repeated %}<th># Submissions</th>{% endif %}
+        <th>Timings</th>
         <th>Template</th>
         <th>Status</th>
         <th class="buttons">Options</th>
@@ -82,8 +90,13 @@
       {% for event in paginate %}
       <tr>
         <td>
+          {% if event.title %}
           <a href="{{ url('manage:event_edit', event.pk) }}" title="{{ event.title }}"
             data-privacy="{{ event.privacy }}">{{ truncate_words(event.title, 8) }}</a>
+          {% else %}
+          <a href="{{ url('manage:event_edit', event.pk) }}" title="{{ event.title }}"
+            data-privacy="{{ event.privacy }}"><em>no title</em></a>
+          {% endif %}
         </td>
         {% if repeated %}
         <td>
@@ -91,6 +104,25 @@
           >{{ get_repeats(event) }}</a>
         </td>
         {% endif %}
+        <td>
+          {% for submission in submissions.get(event.id, []) %}
+            {% if submission.errored %}
+            <span class="errored" title="Time it took till transcoding errored">
+              {{ submission.errored_duration | formatduration }}
+              <span title="Event duration">
+                ({{ submission.event.duration | formatduration }})
+              </span>
+            </span>
+            {% elif submission.finished %}
+            <span class="finished" title="Time it took to finish transcoding">
+              {{ submission.finished_duration | formatduration }}
+              <span title="Event duration">
+                ({{ submission.event.duration | formatduration }})
+              </span>
+            </span>
+            {% endif %}
+          {% endfor %}
+        </td>
         <td>
           {{ event.template.name }}
         </td>
@@ -116,7 +148,7 @@
     </tbody>
   </table>
   {% if not status %}
-  {% include 'manage/_paginate.html' %}
+  {% include "manage/_paginate.html" %}
   {% endif %}
   </form>
 

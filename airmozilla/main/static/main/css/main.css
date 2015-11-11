@@ -107,6 +107,31 @@ body #page { background-color: #20272a; background-image: url("/static/main/img/
     margin-left: .5em;
 }
 
+#masthead .sub-options {
+    z-index: 1000;
+    display: none;
+    position: absolute;
+    /*top: 35px;*/
+    top: 0;
+    background-color: #000;
+    border-left: 1px solid white;
+    border-bottom: 1px solid white;
+    border-right: 1px solid white;
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
+    /*border-radius: 4px;*/
+}
+#masthead .sub-options ul {
+    list-style-type: normal;
+}
+#masthead .sub-options li {
+    display: block;
+}
+#masthead .sub-options a.close {
+    cursor: pointer;
+    text-transform: lowercase;
+}
+
 #site-title.home {
     padding-top: 72px;
     padding-bottom: 46px;
@@ -128,6 +153,10 @@ body #page { background-color: #20272a; background-image: url("/static/main/img/
     top: -6px;
     right: -1px;
     line-height: 20px;
+}
+.alert a.close:hover {
+    color: #B94A48;
+    text-decoration: none;
 }
 .alert-danger,
 .alert-error {
@@ -226,7 +255,16 @@ h1, h2, h3, h4, h5, h6 { color: #b4b4b4; text-shadow: 0 1px 0 rgba(0,0,0,0.3); }
 .event-date { clear: left; margin: 0 0 1em; font: .857em/1.2 "Open Sans", "Lucida Sans", "Lucida Grande", "Lucida Sans Unicode", Verdana, sans-serif; }
 .single-post .event-date { margin: .75em 0 1em; }
 
-div.warning { background-color: #FF9EC5; color: #8A0037; border: 1px solid #8A0037; padding: 10px; }
+div.warning {
+    background-color: #FCF8E3;
+    color: #8A0037;
+    border: 1px solid #8A0037;
+    margin-bottom: 20px;
+    border-radius: 3px;
+}
+div.warning p {
+    margin: 10px;
+}
 
 .entry-content table { border-color: #2d373b; }
 .entry-content th, .entry-content td { border-bottom-color: #2d373b; }
@@ -253,6 +291,14 @@ body .entry-comments a { background-image: url(img/icn-comment.png); }
 legend { color: #b4b4b4; } /* For IE */
 
 /* @Sidebar *********/
+
+/* By default, the sidebar is hidden. Only templates that need it make it visible */
+#content-sub { display: none; }
+
+/* These two only apply when you're vising the content-sub under an event (related content) */
+#content-sub article .entry-header { padding: 1.5em 0 0; }
+#content-sub article .entry-title { font-size: 1.7em; }
+
 .widget h2 { margin-bottom: 20px; }
 #content-sub { background: #2d373b; padding: 24px 24px 4em; }
 .with-sidebar #content-sub { margin-right: -24px; }

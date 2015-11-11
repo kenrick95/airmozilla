@@ -1,16 +1,17 @@
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
+
+from django.core.urlresolvers import reverse
 
 from airmozilla.base.tests.testbase import DjangoTestCase
 from airmozilla.surveys.models import (
     Survey,
     Question,
-    Answer
+    Answer,
+    next_question_order,
 )
 
 
 class TestSurvey(DjangoTestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
 
     def _create_survey(self, name='Test survey', active=True):
         survey = Survey.objects.create(name=name, active=active)
@@ -25,12 +26,14 @@ class TestSurvey(DjangoTestCase):
             question={
                 'question': 'Fav color?',
                 'choices': ['Red', 'Green', 'Blue']
-            }
+            },
+            order=next_question_order(),
         )
         # empty questions are ignored
         Question.objects.create(
             survey=survey,
-            question={}
+            question={},
+            order=next_question_order(),
         )
 
         # render the questions
@@ -62,14 +65,16 @@ class TestSurvey(DjangoTestCase):
             question={
                 'question': 'Fav color?',
                 'choices': ['Red', 'Green', 'Blue']
-            }
+            },
+            order=next_question_order(),
         )
         Question.objects.create(
             survey=survey,
             question={
                 'question': 'Gender?',
                 'choices': ['Male', 'Female', 'Mixed']
-            }
+            },
+            order=next_question_order(),
         )
         response = self.client.post(url, {
             str(question.id): "Green",
@@ -94,7 +99,8 @@ class TestSurvey(DjangoTestCase):
             question={
                 'question': 'Fav color?',
                 'choices': ['Red', 'Green', 'Blue']
-            }
+            },
+            order=next_question_order(),
         )
         response = self.client.post(url, {
             str(question.id): "Green",
@@ -136,7 +142,8 @@ class TestSurvey(DjangoTestCase):
             question={
                 'question': 'Fav color?',
                 'choices': ['Red', 'Green', 'Blue']
-            }
+            },
+            order=next_question_order(),
         )
         response = self.client.post(url, {
             str(question.id): "Green",

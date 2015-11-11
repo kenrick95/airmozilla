@@ -6,11 +6,10 @@ from django.core.mail import EmailMessage
 from django.core.cache import cache
 from django.utils import timezone
 from django.contrib.sites.models import Site
+from django.db.models import Q
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
-
-from airmozilla.main.models import Event
-from airmozilla.webrtc.sending import email_about_mozillian_video
+from airmozilla.main.models import Event, VidlySubmission
 from .vidly import query
 
 
@@ -18,7 +17,8 @@ from .vidly import query
 def auto_archive(verbose=False):
     events = (
         Event.objects
-        .filter(status=Event.STATUS_PENDING,
+        .filter(Q(status=Event.STATUS_PENDING) |
+                Q(status=Event.STATUS_PROCESSING),
                 archive_time__isnull=True,
                 template__name__contains='Vid.ly')
     )
@@ -29,7 +29,7 @@ def auto_archive(verbose=False):
 
     if verbose:  # pragma: no cover
         if any:
-            print "No pending events."
+            print "No processing or pending events."
         else:
             print "No events to archive."
 
@@ -76,7 +76,17 @@ def archive(event, swallow_email_exceptions=False, verbose=False):
             cache.set(cache_key, 'Done', 60 * 60 * 24)
 
     elif results[tag].get('Status') == 'Error':
-        # terrible! Email the admins!
+        # Terrible!
+        submissions = VidlySubmission.objects.filter(
+            event=event,
+            tag=tag,
+            finished__isnull=True
+        )
+        for submission in submissions:
+            submission.errored = timezone.now()
+            submission.save()
+
+        # Email the admins!
         cache_key = 'archiver-%s-error' % tag
         if not cache.get(cache_key):
             try:
@@ -86,7 +96,8 @@ def archive(event, swallow_email_exceptions=False, verbose=False):
                 )
                 if verbose:  # pragma: no cover
                     print (
-                        'Unable to archive pending event "%s" with tag %s' % (
+                        'Unable to archive event "%s" with tag %s'
+                        % (
                             event,
                             tag
                         )
@@ -111,12 +122,14 @@ def archive(event, swallow_email_exceptions=False, verbose=False):
         if verbose:  # pragma: no cover
             print 'Event "%s" archived!' % event
 
-        # if it belonged to a Mozillian, then send an email to the creator
-        if event.mozillian:
-            email_about_mozillian_video(
-                event,
-                swallow_errors=not settings.DEBUG
-            )
+        submissions = VidlySubmission.objects.filter(
+            event=event,
+            tag=tag,
+            finished__isnull=True
+        )
+        for submission in submissions:
+            submission.finished = timezone.now()
+            submission.save()
 
 
 def build_absolute_url(uri):
@@ -126,7 +139,7 @@ def build_absolute_url(uri):
 
 
 def email_about_archiver_error(event, tag):
-    subject = "Unable to archive pending event with tag %s" % tag
+    subject = "Unable to archive event with tag %s" % tag
     message = (
         'When trying to archive the "%s" event we had an error from Vid.ly.\n'
         '\n'

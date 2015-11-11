@@ -1,5 +1,7 @@
 import os
 import shutil
+import json
+import logging
 
 from nose.plugins.skip import SkipTest
 from selenium import webdriver
@@ -9,11 +11,26 @@ from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files import File
 
+# Calm down the overly verbose sorl.thumbnail logging
+logging.getLogger('sorl.thumbnail.base').setLevel(logging.INFO)
+
 
 class DjangoTestCase(TestCase):
+    fixtures = ['airmozilla/manage/tests/main_testdata.json']
+    main_image = 'airmozilla/manage/tests/firefox.png'
+
+    def setUp(self):
+        super(DjangoTestCase, self).setUp()
+        self._upload_media(self.main_image)
 
     def shortDescription(self):
-        return None
+        # Stop nose using the test docstring and instead the test method name.
+        pass
+
+    def post_json(self, path, data=None, **extra):
+        data = data or {}
+        extra['content_type'] = 'application/json'
+        return self.client.post(path, json.dumps(data), **extra)
 
     def tearDown(self):
         assert os.path.basename(settings.MEDIA_ROOT).startswith('testmedia')
@@ -66,3 +83,22 @@ class DjangoLiveServerTestCase(LiveServerTestCase):
         if not settings.RUN_SELENIUM_TESTS:
             raise SkipTest("settings.RUN_SELENIUM_TESTS is set to False")
         super(DjangoLiveServerTestCase, self).setUp()
+
+
+class Response(object):
+    def __init__(self, content=None, status_code=200, headers=None):
+        self.content = content
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def json(self):
+        return self.content
+
+    def iter_content(self, chunk_size=1024):
+        increment = 0
+        while True:
+            chunk = self.content[increment: increment + chunk_size]
+            increment += chunk_size
+            if not chunk:
+                break
+            yield chunk

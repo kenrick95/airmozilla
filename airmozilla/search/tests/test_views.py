@@ -5,24 +5,21 @@ import os
 from django.utils import timezone
 from django.utils.timezone import utc
 from django.contrib.auth.models import User
+from django.core.urlresolvers import reverse
 
-from funfactory.urlresolvers import reverse
 from nose.tools import eq_, ok_
 
 from airmozilla.search.models import LoggedSearch
-from airmozilla.main.models import Event, UserProfile, Tag, Channel
+from airmozilla.main.models import Event, UserProfile, Tag, Channel, Approval
 from airmozilla.base.tests.testbase import DjangoTestCase
 
 
 class TestSearch(DjangoTestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
     placeholder_path = 'airmozilla/manage/tests/firefox.png'
     placeholder = os.path.basename(placeholder_path)
 
     def test_basic_search(self):
         Event.objects.all().delete()
-
-        self._upload_media(self.placeholder_path)
 
         today = timezone.now()
         event = Event.objects.create(
@@ -53,6 +50,53 @@ class TestSearch(DjangoTestCase):
         ok_('Nothing found' not in response.content)
         ok_(event.title in response.content)
         ok_('value="entirely"' in response.content)
+
+    def test_search_unapproved_events_anonymous(self):
+        event = Event.objects.get(title='Test event')
+        url = reverse('search:home')
+        response = self.client.get(url, {'q': 'junk'})
+        eq_(response.status_code, 200)
+        ok_(event.title not in response.content)
+
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
+
+        app = Approval.objects.create(event=event)
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title not in response.content)
+
+        app.processed = True
+        app.save()
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title not in response.content)
+
+        app.approved = True
+        app.save()
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
+
+    def test_search_unapproved_events_signed_in(self):
+        event = Event.objects.get(title='Test event')
+        url = reverse('search:home')
+        self._login()
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
+
+        app = Approval.objects.create(event=event)
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
+
+        app.processed = True
+        app.save()
+        response = self.client.get(url, {'q': 'test'})
+        eq_(response.status_code, 200)
+        ok_(event.title in response.content)
 
     def test_basic_search_with_privacy_filter(self):
         Event.objects.all().delete()
@@ -641,3 +685,23 @@ class TestSearch(DjangoTestCase):
         eq_(response.status_code, 200)
         ok_(channel.slug in response.content)
         ok_(channel.name in response.content)
+
+    def test_searched_event_has_star(self):
+        Event.objects.all().delete()
+
+        today = timezone.now()
+        event = Event.objects.create(
+            title='Engagement Discussion',
+            slug=today.strftime('test-event-%Y%m%d'),
+            start_time=today,
+            placeholder_img=self.placeholder,
+            status=Event.STATUS_SCHEDULED,
+            description="These are my words."
+        )
+        assert event in Event.objects.approved()
+
+        url = reverse('search:home')
+        response = self.client.get(url, {'q': 'discuss'})
+        eq_(response.status_code, 200)
+        ok_('Nothing found' not in response.content)
+        ok_('class="star"' in response.content)

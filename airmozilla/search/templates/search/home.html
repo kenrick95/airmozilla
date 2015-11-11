@@ -10,6 +10,10 @@
 
 {% block body_class %}with-sidebar{% endblock %}
 
+{% block sidebar_inner %}
+{% include "main/_sidebar_inner.html" %}
+{% endblock %}
+
 {% block content_main %}
 
   {% if search_error %}
@@ -58,7 +62,7 @@
             {% endif %}
           </a>
         </h2>
-        {% include 'main/_event_privacy.html' %}
+        {% include "main/_event_privacy.html" %}
         {% if event.is_upcoming() %}
         <h5 class="entry-upcoming">
         Upcoming event
@@ -92,6 +96,7 @@
 
           <a class="go" href="{{ href }}">{{ _('See more') }}</a>
         </p>
+        {{ star_tag(event.id) }}
       </div>
     </article>
   {% else %}
@@ -104,14 +109,14 @@
   <nav class="nav-paging">
     <ul role="navigation">
       {% if next_page_url %}
-        <li class="prev">
+        <li class="next">
           <a href="{{ next_page_url }}">
             {{ _('Next page') }}
           </a>
         </li>
       {% endif %}
       {% if prev_page_url %}
-        <li class="next">
+        <li class="prev">
           <a href="{{ prev_page_url }}">
             {{ _('Previous page') }}
           </a>

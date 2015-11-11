@@ -1,12 +1,10 @@
 import datetime
 
 from django.conf import settings
-from django.contrib.flatpages.models import FlatPage
 from django.db.models import Q
 from django.utils import timezone
 from django.core.cache import cache
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -16,74 +14,149 @@ from airmozilla.main.models import (
 )
 from airmozilla.main.views import is_contributor
 from airmozilla.search.forms import SearchForm
+from airmozilla.staticpages.models import StaticPage
+
+
+def nav_bar(request):
+
+    def get_nav_bar():
+        items = [
+            ('Home', reverse('main:home'), 'home', ''),
+            ('About', '/about/', '/about', ''),
+            ('Channels', reverse('main:channels'), 'channels', ''),
+            ('Calendar', reverse('main:calendar'), 'calendar', ''),
+        ]
+        if not request.user.is_staff:
+            items.append(
+                ('Tag Cloud', reverse('main:tag_cloud'), 'tag_cloud', '')
+            )
+        items.append(
+            ('Starred', reverse('starred:home'), 'starred', '')
+        )
+        unfinished_events = 0
+        if request.user.is_active:
+            unfinished_events = Event.objects.filter(
+                creator=request.user,
+                status=Event.STATUS_INITIATED,
+                upload__isnull=False,
+            ).count()
+            if settings.USE_NEW_UPLOADER:
+                items.append(
+                    ('New/Upload', reverse('new:home'), 'new', ''),
+                )
+            else:
+                items.append(
+                    ('Requests', reverse('suggest:start'), 'suggest', ''),
+                )
+            if request.user.is_staff:
+                items.append(
+                    ('Management', reverse('manage:events'), '', ''),
+                )
+            if not settings.BROWSERID_DISABLED:
+                items.append(
+                    ('Sign out', '/browserid/logout/', '', 'browserid-logout'),
+                )
+        return {'items': items, 'unfinished_events': unfinished_events}
+
+    # The reason for making this a closure is because this stuff is not
+    # needed on every single template render. Only the main pages where
+    # there is a nav bar at all.
+    return {'nav_bar': get_nav_bar}
 
 
 def dev(request):
-    return {'DEV': settings.DEV, 'DEBUG': settings.DEBUG}
+    return {
+        'DEBUG': settings.DEBUG,
+        'BROWSERID_DISABLED': settings.BROWSERID_DISABLED,
+    }
+
+
+def search_form(request):
+    return {'search_form': SearchForm(request.GET)}
+
+
+def base(request):
+
+    def get_feed_data():
+        feed_privacy = _get_feed_privacy(request.user)
+
+        if getattr(request, 'channels', None):
+            channels = request.channels
+        else:
+            channels = Channel.objects.filter(
+                slug=settings.DEFAULT_CHANNEL_SLUG
+            )
+
+        if settings.DEFAULT_CHANNEL_SLUG in [x.slug for x in channels]:
+            title = 'Air Mozilla RSS'
+            url = reverse('main:feed', args=(feed_privacy,))
+        else:
+            _channel = channels[0]
+            title = 'Air Mozilla - %s - RSS' % _channel.name
+            url = reverse(
+                'main:channel_feed',
+                args=(_channel.slug, feed_privacy)
+            )
+        return {
+            'title': title,
+            'url': url,
+        }
+
+    return {
+        # used for things like {% if event.attr == Event.ATTR1 %}
+        'Event': Event,
+        'get_feed_data': get_feed_data,
+    }
 
 
 def sidebar(request):
     # none of this is relevant if you're in certain URLs
 
-    if '/manage/' in request.path_info:
-        return {}
-    if '/roku/' in request.path_info:
-        # Special circumstance here.
-        # We have a static page with URL "/roku" (which django redirects
-        # to "/roku/"). On that page we want sidebar stuff.
-        # But on all XML related roku views we don't want sidebar stuff.
-        if not request.path_info.endswith('/roku/'):
-            return {}
+    def get_sidebar():
+        data = {}
 
-    data = {
-        # used for things like {% if event.attr == Event.ATTR1 %}
-        'Event': Event,
-    }
+        if not getattr(request, 'show_sidebar', True):
+            return data
 
-    # if viewing a specific page is limited by channel, apply that filtering
-    # here too
-    if getattr(request, 'channels', None):
-        channels = request.channels
-    else:
-        channels = Channel.objects.filter(slug=settings.DEFAULT_CHANNEL_SLUG)
+        # if viewing a specific page is limited by channel, apply that
+        # filtering here too
+        if getattr(request, 'channels', None):
+            channels = request.channels
+        else:
+            channels = Channel.objects.filter(
+                slug=settings.DEFAULT_CHANNEL_SLUG
+            )
 
-    feed_privacy = _get_feed_privacy(request.user)
+        if settings.DEFAULT_CHANNEL_SLUG in [x.slug for x in channels]:
+            sidebar_channel = settings.DEFAULT_CHANNEL_SLUG
+        else:
+            _channel = channels[0]
+            sidebar_channel = _channel.slug
 
-    if settings.DEFAULT_CHANNEL_SLUG in [x.slug for x in channels]:
-        feed_title = 'Air Mozilla RSS'
-        feed_url = reverse('main:feed', args=(feed_privacy,))
-        sidebar_channel = settings.DEFAULT_CHANNEL_SLUG
-    else:
-        _channel = channels[0]
-        feed_title = 'Air Mozilla - %s - RSS' % _channel.name
-        feed_url = reverse('main:channel_feed',
-                           args=(_channel.slug, feed_privacy))
-        sidebar_channel = _channel.slug
-    data['feed_title'] = feed_title
-    data['feed_url'] = feed_url
+        data['upcoming'] = get_upcoming_events(channels, request.user)
+        data['featured'] = get_featured_events(channels, request.user)
 
-    data['upcoming'] = get_upcoming_events(channels, request.user)
-    data['featured'] = get_featured_events(channels, request.user)
+        data['sidebar_top'] = None
+        data['sidebar_bottom'] = None
+        sidebar_urls_q = (
+            Q(url='sidebar_top_%s' % sidebar_channel) |
+            Q(url='sidebar_bottom_%s' % sidebar_channel) |
+            Q(url='sidebar_top_*') |
+            Q(url='sidebar_bottom_*')
+        )
+        # to avoid having to do 2 queries, make a combined one
+        # set it up with an iterator
+        for page in StaticPage.objects.filter(sidebar_urls_q):
+            if page.url.startswith('sidebar_top_'):
+                data['sidebar_top'] = page
+            elif page.url.startswith('sidebar_bottom_'):
+                data['sidebar_bottom'] = page
 
-    data['sidebar_top'] = None
-    data['sidebar_bottom'] = None
-    sidebar_urls_q = (
-        Q(url='sidebar_top_%s' % sidebar_channel) |
-        Q(url='sidebar_bottom_%s' % sidebar_channel) |
-        Q(url='sidebar_top_*') |
-        Q(url='sidebar_bottom_*')
-    )
-    # to avoid having to do 2 queries, make a combined one
-    # set it up with an iterator
-    for page in FlatPage.objects.filter(sidebar_urls_q):
-        if page.url.startswith('sidebar_top_'):
-            data['sidebar_top'] = page
-        elif page.url.startswith('sidebar_bottom_'):
-            data['sidebar_bottom'] = page
+        return data
 
-    data['search_form'] = SearchForm(request.GET)
-
-    return data
+    # Make this context processor return a closure so it's explicit
+    # from the template if you need its data.
+    return {'get_sidebar': get_sidebar}
 
 
 def get_upcoming_events(channels, user,
@@ -146,7 +219,33 @@ def get_featured_events(
         featured = _get_featured_events(channels, anonymous, contributor)
         featured = featured[:length]
         cache.set(cache_key, featured, 60 * 60)
-    return [x.event for x in featured]
+
+    # Sadly, in Django when you do a left outer join on a many-to-many
+    # table you get repeats and you can't fix that by adding a simple
+    # `distinct` on the first field.
+    # In django, if you do `myqueryset.distinct('id')` it requires
+    # that that's also something you order by.
+    # In pure Postgresql you can do this:
+    #   SELECT
+    #     DISTINCT main_eventhitstats.id as id,
+    #     (some formula) AS score,
+    #     ...
+    #   FROM ...
+    #   INNER JOIN ...
+    #   INNER JOIN ...
+    #   ORDER BY score DESC
+    #   LIMIT 5;
+    #
+    # But you can't do that with Django.
+    # So we have to manually de-dupe. Hopefully we can alleviate this
+    # problem altogether when we start doing aggregates where you have
+    # many repeated EventHitStats *per* event and you need to look at
+    # their total score across multiple vidly shortcodes.
+    events = []
+    for each in featured:
+        if each.event not in events:
+            events.append(each.event)
+    return events
 
 
 def _get_featured_events(channels, anonymous, contributor):
@@ -157,9 +256,12 @@ def _get_featured_events(channels, anonymous, contributor):
     yesterday -= datetime.timedelta(seconds=1)
     featured = (
         EventHitStats.objects
+        .filter(
+            Q(event__status=Event.STATUS_SCHEDULED) |
+            Q(event__status=Event.STATUS_PROCESSING)
+        )
         .exclude(event__archive_time__isnull=True)
         .filter(event__archive_time__lt=yesterday)
-
         .exclude(event__channels__exclude_from_trending=True)
         .extra(
             select={
@@ -179,6 +281,7 @@ def _get_featured_events(channels, anonymous, contributor):
         featured = featured.filter(event__privacy=Event.PRIVACY_PUBLIC)
     elif contributor:
         featured = featured.exclude(event__privacy=Event.PRIVACY_COMPANY)
+
     featured = featured.select_related('event__picture')
     return featured
 
@@ -252,8 +355,9 @@ def autocompeter(request):
             groups.append(Event.PRIVACY_COMPANY)
     url = getattr(settings, 'AUTOCOMPETER_URL', '')
     domain = getattr(settings, 'AUTOCOMPETER_DOMAIN', '')
+    enabled = getattr(settings, 'AUTOCOMPETER_ENABLED', True)
     return {
-        'include_autocompeter': True,
+        'include_autocompeter': enabled,
         'autocompeter_domain': domain,
         'autocompeter_groups': ','.join(groups),
         'autocompeter_url': url,

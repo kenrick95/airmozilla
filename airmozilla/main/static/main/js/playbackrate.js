@@ -1,5 +1,8 @@
 $(function() {
-
+    if (!$('.playbackrate').length) {
+        // if the dom node isn't there don't bother with any of this
+        return;
+    }
     function highlightCurrentPlaybackrate() {
         var current = document.querySelector('video').playbackRate;
         $('.playbackrate .options a').each(function() {
@@ -18,6 +21,16 @@ $(function() {
             $('.playbackrate a.open').removeClass('inactive');
         }
     }
+
+    // expand the options into the page
+    var options = $('.playbackrate .options');
+    $.each(options.data('options'), function() {
+        $('<a>')
+            .data('rate', this[0])
+            .attr('title', this[1])
+            .html(this[0] + '&times')
+            .appendTo(options);
+    });
 
     $('.playbackrate').on('click', 'a.open', function(event) {
         event.preventDefault();

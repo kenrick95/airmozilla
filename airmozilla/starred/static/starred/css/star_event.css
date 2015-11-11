@@ -1,0 +1,29 @@
+a.star {
+    background: url('../img/Star20YellowTransparent.png') no-repeat;
+    height: 20px;
+    width: 20px;
+    left: 145px;
+    top: 75px;
+    background-position: -20px 0px;
+    opacity: 0.9;
+    cursor: pointer;
+}
+a.star.live {
+    left: 190px;
+    top: 130px;
+}
+a.star.sidebar {
+    left: 138px;
+    top: 68px;
+}
+a.star-on {
+    background-position: 0 0;
+}
+aside .entry-title a.star,
+article .entry-summary a.star {
+    position: absolute;
+}
+/* when it's inside the full event page */
+h1.entry-title a.star {
+    display: inline-block;
+}

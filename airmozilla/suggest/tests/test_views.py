@@ -4,18 +4,17 @@ import datetime
 import tempfile
 import shutil
 
-from django.test import TestCase
+import pytz
+from mock import patch
+from nose.tools import eq_, ok_
+
 from django.contrib.auth.models import User, Group, Permission
 from django.conf import settings
 from django.utils import timezone
 from django.utils.timezone import utc
 from django.core import mail
 from django.core.files import File
-
-import pytz
-from mock import patch
-from funfactory.urlresolvers import reverse
-from nose.tools import eq_, ok_
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     SuggestedEvent,
@@ -24,11 +23,13 @@ from airmozilla.main.models import (
     Location,
     Channel,
     Tag,
-    Picture
+    Picture,
+    Topic,
 )
+from airmozilla.base.tests.testbase import Response
 from airmozilla.uploads.models import Upload
 from airmozilla.comments.models import SuggestedDiscussion
-
+from airmozilla.base.tests.testbase import DjangoTestCase
 
 _here = os.path.dirname(__file__)
 HAS_OPENGRAPH_FILE = os.path.join(_here, 'has_opengraph.html')
@@ -40,24 +41,13 @@ class HeadResponse(object):
         self.headers = headers
 
 
-class Response(object):
-    def __init__(self, content=None, status_code=200):
-        self.content = content
-        self.status_code = status_code
-
-
-class TestPages(TestCase):
-    fixtures = ['airmozilla/manage/tests/main_testdata.json']
+class TestPages(DjangoTestCase):
     placeholder = 'airmozilla/manage/tests/firefox.png'
 
     def setUp(self):
         super(TestPages, self).setUp()
         self.user = User.objects.create_superuser('fake', 'fake@f.com', 'fake')
         assert self.client.login(username='fake', password='fake')
-        self.precorded_location = Location.objects.create(
-            name=settings.DEFAULT_PRERECORDED_LOCATION[0],
-            timezone=settings.DEFAULT_PRERECORDED_LOCATION[1]
-        )
         self.tmp_dir = tempfile.mkdtemp()
 
     def tearDown(self):
@@ -113,17 +103,21 @@ class TestPages(TestCase):
         return event
 
     def test_link_to_suggest(self):
-        start_url = reverse('suggest:start')
+        event = Event.objects.get(title='Test event')
+        self._attach_file(event, self.placeholder)
         response = self.client.get('/')
         eq_(response.status_code, 200)
+        start_url = reverse('suggest:start')
         ok_(start_url in response.content)
 
     def test_unauthorized(self):
         """ Client with no log in - should be rejected. """
         self.client.logout()
         response = self.client.get(reverse('suggest:start'))
-        self.assertRedirects(response, settings.LOGIN_URL
-                             + '?next=' + reverse('suggest:start'))
+        self.assertRedirects(
+            response, settings.LOGIN_URL +
+            '?next=' + reverse('suggest:start')
+        )
 
     def test_start(self):
         url = reverse('suggest:start')
@@ -145,61 +139,6 @@ class TestPages(TestCase):
         eq_(event.status, SuggestedEvent.STATUS_CREATED)
         self.assertRedirects(response, url)
 
-    def test_start_pre_recorded(self):
-        url = reverse('suggest:start')
-        response = self.client.get(url)
-        eq_(response.status_code, 200)
-
-        response = self.client.post(url, {
-            'title': 'A New World',
-            'event_type': 'pre-recorded'
-        })
-        eq_(response.status_code, 302)
-
-        event = SuggestedEvent.objects.get(title='A New World')
-        ok_(not event.upcoming)
-        eq_(event.popcorn_url, None)
-        eq_(event.slug, 'a-new-world')
-        ok_(event.start_time)
-        eq_(event.location.name, self.precorded_location.name)
-        eq_(event.location.timezone, self.precorded_location.timezone)
-        url = reverse('uploads:upload')
-        self.assertRedirects(response, url)
-
-    @patch('requests.head')
-    def test_start_pre_recorded_and_upload_file(self, rhead):
-        def mocked_head(url, **options):
-            return HeadResponse(**{'content-length': 123456})
-        rhead.side_effect = mocked_head
-
-        url = reverse('suggest:start')
-        response = self.client.post(url, {
-            'title': 'A New World',
-            'event_type': 'pre-recorded'
-        })
-        eq_(response.status_code, 302)
-        url = reverse('uploads:upload')
-        self.assertRedirects(response, url)
-
-        event = SuggestedEvent.objects.get(title='A New World')
-
-        # now go there and save an upload
-        save_url = reverse('uploads:save')
-        response = self.client.post(save_url, {
-            'url': 'https://aws.com/foo.mpg'
-        })
-        eq_(response.status_code, 200)
-        information = json.loads(response.content)
-        eq_(
-            information['suggested_event']['url'],
-            reverse('suggest:description', args=(event.pk,))
-        )
-        upload = Upload.objects.get(url='https://aws.com/foo.mpg')
-        # reload
-        event = SuggestedEvent.objects.get(pk=event.pk)
-        eq_(event.upload, upload)
-        eq_(upload.suggested_event, event)
-
     def test_start_popcorn(self):
         url = reverse('suggest:start')
         response = self.client.get(url)
@@ -217,47 +156,8 @@ class TestPages(TestCase):
         eq_(event.popcorn_url, 'https://')
         eq_(event.slug, 'a-new-world')
         ok_(event.start_time)
-        eq_(event.location.name, self.precorded_location.name)
-        eq_(event.location.timezone, self.precorded_location.timezone)
+        eq_(event.location, None)
         self.assertRedirects(response, url)
-
-    def test_start_with_file_upload_id(self):
-        upload = Upload.objects.create(
-            user=self.user,
-            url='https://s3.com/file',
-            size=1234
-        )
-        url = reverse('suggest:start')
-        response = self.client.get(url, {'upload': upload.pk})
-        eq_(response.status_code, 200)
-
-    def test_start_with_file_upload_twice(self):
-        upload = Upload.objects.create(
-            user=self.user,
-            url='https://s3.com/file',
-            file_name='file.mpg',
-            size=1234
-        )
-        suggested_event = SuggestedEvent.objects.create(
-            user=self.user,
-            title='Cool Title',
-            slug='cool-title',
-            upload=upload
-        )
-        url = reverse('suggest:start')
-        response = self.client.get(url, {'upload': upload.pk})
-        eq_(response.status_code, 302)
-        """
-        self.assertRedirects(
-            response,
-            reverse('uploads:home')
-        )
-        """
-        response = self.client.get(reverse('uploads:home'))
-        eq_(response.status_code, 200)
-        ok_('The file upload you selected belongs to a requested event '
-            'with the title' in response.content)
-        ok_(suggested_event.title in response.content)
 
     def test_start_duplicate_slug(self):
         event = Event.objects.get(slug='test-event')
@@ -493,33 +393,6 @@ class TestPages(TestCase):
         response = self.client.post(url)
         eq_(response.status_code, 400)
 
-    def test_file(self):
-        event = SuggestedEvent.objects.create(
-            user=self.user,
-            title='Cool Title',
-            slug='cool-title',
-        )
-        assert event.upcoming
-        url = reverse('suggest:file', args=(event.pk,))
-        response = self.client.get(url)
-        eq_(response.status_code, 302)
-        # you have no business here on an upcoming event
-        self.assertRedirects(
-            response,
-            reverse('suggest:description', args=(event.pk,))
-        )
-        event.upcoming = False
-        now = timezone.now()
-        event.start_time = now
-        event.location = self.precorded_location
-        event.save()
-
-        response = self.client.get(url)
-        eq_(response.status_code, 200)
-        # expect a link to the upload history page
-        uploads_url = reverse('uploads:home')
-        ok_(uploads_url in response.content)
-
     @patch('requests.get')
     def test_popcorn(self, rget):
 
@@ -552,7 +425,6 @@ class TestPages(TestCase):
         event.popcorn_url = 'https://'
         now = timezone.now()
         event.start_time = now
-        event.location = self.precorded_location
         event.save()
 
         response = self.client.get(url)
@@ -585,101 +457,6 @@ class TestPages(TestCase):
                 os.path.join(
                     self.tmp_dir, event.placeholder_img.path)
                 ))
-
-    def test_file_not_your_suggested_event(self):
-        event = SuggestedEvent.objects.create(
-            user=User.objects.create(username='someoneelse'),
-            title='Cool Title',
-            slug='cool-title',
-        )
-        url = reverse('suggest:file', args=(event.pk,))
-        response = self.client.get(url)
-        eq_(response.status_code, 400)
-
-    def test_file_with_uploads_to_choose(self):
-        now = timezone.now()
-        event = SuggestedEvent.objects.create(
-            user=self.user,
-            title='Cool Title',
-            slug='cool-title',
-            upcoming=False,
-            location=self.precorded_location,
-            start_time=now
-        )
-        other_event = SuggestedEvent.objects.create(
-            user=self.user,
-            title='Other Title',
-            slug='other-title',
-            upcoming=False,
-            location=self.precorded_location,
-            start_time=now
-        )
-
-        # make some uploads
-        upload1 = Upload.objects.create(
-            user=self.user,
-            url='http://1',
-            file_name='File 1',
-            size=1000000
-        )
-        Upload.objects.create(
-            user=User.objects.create(username='someoneelse'),
-            url='http://1',
-            file_name='File 2',
-            size=1000000
-        )
-        Upload.objects.create(
-            user=self.user,
-            url='http://1',
-            file_name='File 3',
-            size=1000000,
-            suggested_event=other_event
-        )
-        upload4 = Upload.objects.create(
-            user=self.user,
-            url='http://1',
-            file_name='File 4',
-            size=1000000,
-        )
-
-        url = reverse('suggest:file', args=(event.pk,))
-        response = self.client.get(url)
-        eq_(response.status_code, 200)
-        ok_('File 1' in response.content)
-        ok_('File 4' in response.content)
-        # someone elses
-        ok_('File 2' not in response.content)
-        # busy
-        ok_('File 3' not in response.content)
-
-        response = self.client.post(url, {
-            'upload': upload1.pk
-        })
-        eq_(response.status_code, 302)
-        self.assertRedirects(
-            response,
-            reverse('suggest:description', args=(event.pk,))
-        )
-
-        event = SuggestedEvent.objects.get(pk=event.pk)
-        eq_(event.upload, upload1)
-
-        upload1 = Upload.objects.get(pk=upload1.pk)
-        eq_(upload1.suggested_event, event)
-
-        # let's say we change our minds
-        response = self.client.post(url, {
-            'upload': upload4.pk
-        })
-        eq_(response.status_code, 302)
-        event = SuggestedEvent.objects.get(pk=event.pk)
-        eq_(event.upload, upload4)
-
-        upload1 = Upload.objects.get(pk=upload1.pk)
-        eq_(upload1.suggested_event, None)
-
-        upload4 = Upload.objects.get(pk=upload4.pk)
-        eq_(upload4.suggested_event, event)
 
     def test_description(self):
         event = SuggestedEvent.objects.create(
@@ -739,12 +516,14 @@ class TestPages(TestCase):
 
         data = {
             'start_time': '2021-01-01 12:00:00',
+            'estimated_duration': str(60 * 60 * 2),
             'timezone': 'US/Pacific',
             'location': mv.pk,
             'privacy': Event.PRIVACY_CONTRIBUTORS,
             'tags': tag1.name + ', ' + tag2.name,
             'channels': channel.pk,
             'additional_links': 'http://www.peterbe.com\n',
+            'call_info': 'vidyo room',
         }
 
         response = self.client.post(url, data)
@@ -758,10 +537,12 @@ class TestPages(TestCase):
         eq_(event.start_time.strftime('%Y-%m-%d'), '2021-01-01')
         eq_(event.start_time.strftime('%H:%M'), '20:00')
         eq_(event.start_time.tzname(), 'UTC')
+        eq_(event.estimated_duration, 60 * 60 * 2)
         eq_(event.location, mv)
         eq_([x.name for x in event.tags.all()], ['foo', 'bar'])
         eq_(event.channels.all()[0], channel)
         eq_(event.additional_links, data['additional_links'].strip())
+        eq_(event.call_info, 'vidyo room')
 
         # do it again, but now with different tags
         data['tags'] = 'buzz, bar'
@@ -788,6 +569,7 @@ class TestPages(TestCase):
         eq_(response.context['form']['enable_discussion'].value(), False)
 
     def test_details_enable_discussion(self):
+        assert self.client.login(username='fake', password='fake')
         event = SuggestedEvent.objects.create(
             user=self.user,
             title='Cool Title',
@@ -807,6 +589,7 @@ class TestPages(TestCase):
 
         data = {
             'start_time': '2021-01-01 12:00:00',
+            'estimated_duration': '3600',
             'timezone': 'US/Pacific',
             'location': mv.pk,
             'privacy': Event.PRIVACY_CONTRIBUTORS,
@@ -824,6 +607,9 @@ class TestPages(TestCase):
         )
         eq_(discussion.moderators.all().count(), 1)
         ok_(self.user in discussion.moderators.all())
+
+        # assert that we're still signed in
+        assert self.client.session['_auth_user_id']
 
         # do it a second time and it shouldn't add us as a moderator again
         response = self.client.post(url, data)
@@ -875,6 +661,7 @@ class TestPages(TestCase):
 
         data = {
             'start_time': '2021-01-01 12:00:00',
+            'estimated_duration': '3600',
             'timezone': 'US/Pacific',
             'location': babylon.pk,
             'privacy': Event.PRIVACY_CONTRIBUTORS,
@@ -975,6 +762,7 @@ class TestPages(TestCase):
         future = future.replace(tzinfo=tz)
         data = {
             'start_time': future.strftime('%Y-%m-%d %H:%M'),
+            'estimated_duration': '3600',
             'timezone': 'US/Pacific',
             'location': mv.pk,
             'privacy': Event.PRIVACY_CONTRIBUTORS,
@@ -1135,6 +923,7 @@ class TestPages(TestCase):
         ok_('Location' in response.content)
         ok_('Start time' in response.content)
         ok_('Remote presenters' in response.content)
+        ok_('Vidyo room' in response.content)
 
         ok_("Cool O&#39;Title" in response.content)
         ok_('cool-title' in response.content)
@@ -1325,14 +1114,6 @@ class TestPages(TestCase):
         eq_(response.status_code, 200)
 
     def test_submit_event(self):
-        # create a superuser who will automatically get all notifications
-        User.objects.create(
-            username='zandr',
-            email='zandr@mozilla.com',
-            is_staff=True,
-            is_superuser=True
-        )
-
         event = self._make_suggested_event()
         ok_(not event.submitted)
         eq_(event.status, SuggestedEvent.STATUS_CREATED)
@@ -1341,14 +1122,14 @@ class TestPages(TestCase):
 
         # before we submit it, we need to create some users
         # who should get the email notification
-        approvers = Group.objects.get(name='testapprover')
+        group, _ = Group.objects.get_or_create(
+            name=settings.NOTIFICATIONS_GROUP_NAME
+        )
         richard = User.objects.create_user(
             'richard',
             email='richard@mozilla.com'
         )
-        richard.groups.add(approvers)
-        permission = Permission.objects.get(codename='add_event')
-        approvers.permissions.add(permission)
+        richard.groups.add(group)
 
         response = self.client.post(url)
         eq_(response.status_code, 302)
@@ -1365,7 +1146,6 @@ class TestPages(TestCase):
         ok_(event.title in email_sent.subject)
         eq_(email_sent.from_email, settings.EMAIL_FROM_ADDRESS)
         ok_('richard@mozilla.com' in email_sent.recipients())
-        ok_('zandr@mozilla.com' in email_sent.recipients())
         ok_('US/Pacific' in email_sent.body)
         ok_(event.user.email in email_sent.body)
         ok_(event.title in email_sent.body)
@@ -1384,6 +1164,26 @@ class TestPages(TestCase):
         event = SuggestedEvent.objects.get(pk=event.pk)
         ok_(not event.submitted)
         eq_(event.status, SuggestedEvent.STATUS_RETRACTED)
+
+    def test_submit_event_with_topics(self):
+        event = self._make_suggested_event()
+        topic = Topic.objects.create(
+            topic='Money Matters',
+            is_active=True
+        )
+        group = Group.objects.create(name='PR')
+        richard = User.objects.create_user(
+            'richard',
+            email='richard@mozilla.com'
+        )
+        richard.groups.add(group)
+        topic.groups.add(group)
+        event.topics.add(topic)
+        url = reverse('suggest:summary', args=(event.pk,))
+        response = self.client.post(url)
+        eq_(response.status_code, 302)
+        event = SuggestedEvent.objects.get(pk=event.pk)
+        ok_(event.topics.all())
 
     def test_title_edit(self):
         event = SuggestedEvent.objects.create(
@@ -1448,21 +1248,21 @@ class TestPages(TestCase):
 
         # before anything, we need to create some users
         # who should get the email notification
-        approvers = Group.objects.get(name='testapprover')
+        group, _ = Group.objects.get_or_create(
+            name=settings.NOTIFICATIONS_GROUP_NAME
+        )
         richard = User.objects.create_user(
             'richard',
             email='richard@mozilla.com'
         )
-        richard.groups.add(approvers)
+        richard.groups.add(group)
         mrinactive = User.objects.create_user(
             'mrinactive',
             email='mr@inactive.com',
         )
         mrinactive.is_active = False
         mrinactive.save()
-        mrinactive.groups.add(approvers)
-        permission = Permission.objects.get(codename='add_event')
-        approvers.permissions.add(permission)
+        mrinactive.groups.add(group)
 
         data = {
             'save_comment': 1,
@@ -1505,10 +1305,7 @@ class TestPages(TestCase):
         ok_(event.submitted)
 
         email_sent = mail.outbox[-1]
-
-        ok_('zandr@mozilla.com' in email_sent.recipients())
         ok_('richard@mozilla.com' in email_sent.recipients())
-        ok_(self.user.email in email_sent.recipients())
         ok_('mr@inactive.com' not in email_sent.recipients())
 
         ok_('TitleTitle' in email_sent.subject)
@@ -1541,14 +1338,14 @@ class TestPages(TestCase):
 
         # before anything, we need to create some users
         # who should get the email notification
-        approvers = Group.objects.get(name='testapprover')
+        group, _ = Group.objects.get_or_create(
+            name=settings.NOTIFICATIONS_GROUP_NAME
+        )
         richard = User.objects.create_user(
             'richard',
             email='richard@mozilla.com'
         )
-        richard.groups.add(approvers)
-        permission = Permission.objects.get(codename='add_event')
-        approvers.permissions.add(permission)
+        richard.groups.add(group)
 
         data = {
             'save_comment': 1,
@@ -1606,14 +1403,14 @@ class TestPages(TestCase):
 
         # before anything, we need to create some users
         # who should get the email notification
-        approvers = Group.objects.get(name='testapprover')
+        group, _ = Group.objects.get_or_create(
+            name=settings.NOTIFICATIONS_GROUP_NAME
+        )
         richard = User.objects.create_user(
             'richard',
             email='richard@mozilla.com'
         )
-        richard.groups.add(approvers)
-        permission = Permission.objects.get(codename='add_event')
-        approvers.permissions.add(permission)
+        richard.groups.add(group)
 
         data = {
             'save_comment': 1,

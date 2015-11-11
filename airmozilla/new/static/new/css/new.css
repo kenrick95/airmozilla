@@ -1,0 +1,388 @@
+ui-view {
+    /*
+    This trick makes sure the footer stays to avoid flicker
+    when app.js decides which template and controller to load
+    and show.
+    */
+    min-height: 600px;
+    display: block;
+}
+
+[ng-cloak],
+.ng-cloak {
+  display: none !important;
+}
+
+input.has-error,
+textarea.has-error {
+    border: 1px solid darkred;
+}
+
+.form-group > label {
+    padding-top: 0.75em;
+}
+.alert-danger h4 {
+    color: darkred;
+}
+
+#details-form input[type="text"],
+#details-form textarea {
+    width: 97%;
+}
+#details-form input[id="id_title"] {
+    font-size: 130%;
+    /*width: 75%;*/
+}
+
+div.picture-preview {
+    float: right;
+    width: 160px;
+}
+
+div.loading-preview {
+    float: right;
+    width: 160px;
+    height: 90px;
+    margin-bottom: 10px;
+    border: 1px solid #B4B4B4;
+    text-align: center;
+}
+
+/* On the page where you pick a picture */
+div.all-thumbnails {
+    content: "";
+    display: table;
+    clear: both;
+}
+
+div.thumbnail-picked {
+    background-color: #efefef;
+}
+
+div.thumbnail-outer {
+    display: inline;
+    padding: 20px;
+    float: left;
+}
+
+.summary th, .summary td {
+    padding: 2px;
+}
+.summary th {
+    text-align: left;
+    padding-right: 6px;
+    vertical-align: top;
+}
+.summary td.event-title {
+    font-size: 130%;
+}
+.summary td {
+    width: 100%;
+}
+
+/* overrides for jquery textcomplete */
+.dropdown-menu li:hover, .dropdown-menu .active {
+    background-color: #20272A;
+}
+.dropdown-menu {
+    background-color: #20272A;
+}
+.dropdown-menu li.active {
+    color: #fff;
+}
+
+.loading-outer-large {
+    margin: 300px;
+}
+
+.loading-outer-medium {
+    margin: 150px 300px;
+}
+
+.loading {
+    background: url(../img/spinner-20272A.gif) no-repeat;
+    padding-left: 30px;
+
+    -webkit-animation-name: blinker;
+    -webkit-animation-duration: 1s;
+    -webkit-animation-timing-function: linear;
+    -webkit-animation-iteration-count: infinite;
+
+    -moz-animation-name: blinker;
+    -moz-animation-duration: 1s;
+    -moz-animation-timing-function: linear;
+    -moz-animation-iteration-count: infinite;
+
+    animation-name: blinker;
+    animation-duration: 1s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+}
+.loading-vertical {
+    background-position: center;
+    padding-left: 0;
+    padding-top: 45px;
+}
+@-moz-keyframes blinker {
+    0% { opacity: 1.0; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1.0; }
+}
+@-webkit-keyframes blinker {
+    0% { opacity: 1.0; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1.0; }
+}
+@keyframes blinker {
+    0% { opacity: 1.0; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1.0; }
+}
+
+form.submission {
+    padding: 10px;
+    border: 4px solid #323232;
+    text-align: center;
+}
+
+.event-summary {
+    margin: 50px 0;
+}
+.event-summary .thumbnail-wrapper {
+    float: left;
+}
+.event-summary .event-title,
+.event-summary .event-url {
+    margin-left: 25px;
+}
+.event-summary a.event-title {
+    font-size: 140%;
+}
+.event-summary .event-url {
+    font-size: 80%;
+}
+
+
+/* Inspired by http://www.hongkiat.com/blog/html5-progress-bar/ */
+.progress-bar {
+    width: 95%;
+    margin: 30px auto 0;
+    padding: 15px 15px;
+    border-radius: 3px;
+}
+.progress-bar progress {
+    background-color: #f3f3f3;
+    border: 0;
+    width: 75%;
+    height: 22px;
+    border-radius: 4px;
+}
+.progress-bar progress::-webkit-progress-bar {
+    background-color: #f3f3f3;
+    border-radius: 4px;
+}
+.progress-bar progress::-webkit-progress-value {
+    background: #cdeb8e;
+    background: -moz-linear-gradient(top,  #cdeb8e 0%, #a5c956 100%);
+    background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,#cdeb8e), color-stop(100%,#a5c956));
+    background: -webkit-linear-gradient(top,  #cdeb8e 0%,#a5c956 100%);
+    background: -o-linear-gradient(top,  #cdeb8e 0%,#a5c956 100%);
+    background: -ms-linear-gradient(top,  #cdeb8e 0%,#a5c956 100%);
+    background: linear-gradient(to bottom,  #cdeb8e 0%,#a5c956 100%);
+    filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#cdeb8e', endColorstr='#a5c956',GradientType=0 );
+    border-radius: 4px;
+}
+.progress-bar progress::-moz-progress-bar {
+    background: #cdeb8e;
+    background: -moz-linear-gradient(top,  #cdeb8e 0%, #a5c956 100%);
+    background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,#cdeb8e), color-stop(100%,#a5c956));
+    background: -webkit-linear-gradient(top,  #cdeb8e 0%,#a5c956 100%);
+    background: -o-linear-gradient(top,  #cdeb8e 0%,#a5c956 100%);
+    background: -ms-linear-gradient(top,  #cdeb8e 0%,#a5c956 100%);
+    background: linear-gradient(to bottom,  #cdeb8e 0%,#a5c956 100%);
+    filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#cdeb8e', endColorstr='#a5c956',GradientType=0 );
+    border-radius: 4px;
+}
+.progress-bar .progress-value,
+.progress-bar .progress-size {
+    padding: 0px 5px;
+    line-height: 20px;
+    margin-left: 5px;
+    height: 22px;
+    float: right;
+}
+.progress-bar .progress-size {
+    font-size: 80%;
+}
+
+ul.channels.expanded {
+    -webkit-column-count: 3;
+    -webkit-column-gap: 10px;
+    -moz-column-count: 3;
+    -moz-column-gap: 10px;
+    column-count: 3;
+    column-gap: 10px;
+}
+
+ul#id_topics li,
+ul.channels li {
+    margin-bottom: 0;
+}
+ul#id_topics li label,
+ul.channels li label {
+    padding-bottom: 0.1em;
+}
+
+a[ng-click] {
+    cursor: pointer;
+}
+
+.show-hide {
+    -webkit-transition:all linear 0.5s;
+    transition:all linear 0.5s;
+}
+
+.show-hide.ng-hide {
+    opacity: 0;
+}
+
+button.delete-button, button.delete-confirm, button.delete-cancel {
+    font-size: 80%;
+    padding: 4px 12px;
+}
+
+.start .event {
+    clear: left;
+    margin-bottom: 40px;
+}
+.start .event .deletion {
+    float: right;
+}
+.start .event .picture {
+    float: left;
+}
+.start .event .metadata {
+    margin-left: 200px;
+}
+.start .no-picture {
+    display: block;
+    text-align: center;
+    width: 160px;
+    padding: 35px 0;
+    border: 1px solid #B4B4B4;;
+}
+
+.picture-options {
+    margin-top: 50px;
+    float: right;
+}
+
+.picture-options button {
+    font-size: 70%;
+    padding: 5px 8px;
+}
+
+
+video {
+    width: 100%;
+    border-radius: 4px;
+}
+video.recording {
+    box-shadow: 0 0 30px 7px #f9493c;
+    /*box-shadow: 0 -2px 0 rgba(0,0,0,0.2) inset !important;*/
+    -webkit-animation-name: redPulse;
+    -webkit-animation-duration: 2s;
+    -webkit-animation-iteration-count: infinite;
+    -moz-animation-name: redPulse;
+    -moz-animation-duration: 2s;
+    -moz-animation-iteration-count: infinite;
+    animation-name: redPulse;
+    animation-duration: 2s;
+    animation-iteration-count: infinite;
+}
+video.ready {
+    box-shadow: 0 0 9px 2px #5de243;
+}
+
+@-webkit-keyframes redPulse {
+  from { background-color: #f9493c; -webkit-box-shadow: 0 0 9px #333; }
+  50% { background-color: #f9493c; -webkit-box-shadow: 0 0 18px #f9493c; }
+  to { background-color: #f9493c; -webkit-box-shadow: 0 0 9px #333; }
+}
+@-moz-keyframes redPulse {
+  from { background-color: #f9493c; -moz-box-shadow: 0 0 9px #333; }
+  50% { background-color: #f9493c; -moz-box-shadow: 0 0 18px #f9493c; }
+  to { background-color: #f9493c; -moz-box-shadow: 0 0 9px #333; }
+}
+@keyframes redPulse {
+  from { background-color: #f9493c; box-shadow: 0 0 9px #333; }
+  50% { background-color: #f9493c; box-shadow: 0 0 18px #f9493c; }
+  to { background-color: #f9493c; box-shadow: 0 0 9px #333; }
+}
+
+.video-outer {
+    position: relative;
+}
+.video-outer canvas {
+    display: none;
+}
+.video-outer video.recorder.mirrored {
+    transform: rotateY(180deg);
+    -webkit-transform:rotateY(180deg); /* Safari and Chrome */
+    -moz-transform:rotateY(180deg); /* Firefox */
+}
+.video-outer .silhouette {
+    position: absolute;
+    z-index: 50; /* something less than the start-stop button */
+}
+.video-outer .start-stop-button,
+.video-outer .countdown {
+    text-align: center;
+    z-index: 100;
+    position: absolute;
+}
+.video-outer .countdown {
+    left: 40%;
+    top: 14%;
+    font-size: 2000%;
+    font-weight: bold;
+}
+.video-outer .start-stop-button {
+    left: 41%;
+    top: 74%;
+    box-shadow: 0px 0px 28px 5px #FFF;
+}
+.video-outer .about-filesize {
+    font-size: 80%;
+}
+.video-outer video {
+    margin-bottom: 20px;
+}
+.video-outer .buttons {
+    float: right;
+}
+.video-outer .buttons button  {
+    margin-left: 5px;
+}
+.video-outer .quality-instructions h4 {
+    margin: 20px 0;
+}
+
+.video-outer .quality-instructions ul {
+    margin-left: 20px;
+}
+
+.after-recording {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+.extra-note {
+    margin-top: 110px;
+    font-size: 80%;
+}
+
+button.smaller {
+    font-size: 75%;
+    padding: 6px 10px;
+}

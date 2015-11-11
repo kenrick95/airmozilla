@@ -1,4 +1,4 @@
-var app = angular.module('eventmanagerApp', ['angularMoment', 'LocalForageModule']);
+var app = angular.module('eventmanagerApp', ['angularMoment']);
 
 // http://stackoverflow.com/a/1714899/205832
 var serializeObject = function(obj) {
@@ -26,8 +26,8 @@ app.filter('startFrom', function() {
 
 
 app.controller('EventManagerController',
-['$scope', '$http', '$localForage',
-function EventManagerController($scope, $http, $localForage) {
+['$scope', '$http', '$interval',
+function EventManagerController($scope, $http, $interval) {
     'use strict';
 
     $scope.first_loading = true;
@@ -184,7 +184,12 @@ function EventManagerController($scope, $http, $localForage) {
             if (unmatched) return false;
         }
         if ($scope.search_location) {
-            if (!search_location_regex.test(event.location)) {
+            if (['blank', 'empty', 'pre-recorded'].indexOf($scope.search_location) > -1) {
+                // then strangely match those with no location
+                if (event.location) {
+                    return false;
+                }
+            } else if (!search_location_regex.test(event.location)) {
                 return false;
             }
         }
@@ -230,8 +235,6 @@ function EventManagerController($scope, $http, $localForage) {
                 return !!event.needs_approval;
             } else if ($scope.search_only === 'live') {
                 return !!event.is_live;
-            } else if ($scope.search_only === 'mozillian') {
-                return !!event.mozillian;
             } else {
                 console.warn('Unrecognized option', $scope.search_only);
             }
@@ -274,18 +277,63 @@ function EventManagerController($scope, $http, $localForage) {
         return $scope.urls[viewname].replace('0', item);
     };
 
+
+    $scope.modified_events = [];
+
+    $scope.replaceModifiedEvents = function() {
+        var modified = {};
+        $scope.modified_events.forEach(function(event) {
+            modified[event.id] = event;
+        });
+        $scope.events.forEach(function(event, i) {
+            if (modified[event.id]) {
+                $scope.events[i] = modified[event.id];
+                delete modified[event.id];
+            }
+        });
+        // add what's left
+        for (var id in modified) {
+            $scope.events.push(modified[id]);
+        }
+        $scope.max_modified = $scope.next_max_modified;
+        $scope.modified_events = [];
+    };
+
+    function lookForModifiedEvents() {
+        /* This function is repeatedly called in an interval timer */
+        fetchEvents({since: $scope.max_modified})
+        .success(function(response) {
+            if (response.max_modified) {
+                $scope.modified_events = response.events;
+                $scope.next_max_modified = response.max_modified;
+            }
+        })
+        .error(function() {
+            console.error.apply(console, arguments);
+        });
+    }
+
+    $scope.load_error = null;
+
     function loadAll() {
         fetchEvents({})
           .success(function(data) {
-              $localForage.setItem('eventmanager', data);
+              $scope.load_error = null;
+              localStorage.setItem('eventmanager', JSON.stringify(data));
               $scope.events = data.events;
               $scope.reading_from_cache = false;
+              $scope.max_modified = data.max_modified;
+              // every 10 seconds, look for for changed events
+              $interval(lookForModifiedEvents, 10 * 1000);
           }).error(function(data, status) {
-              console.warn('Failed to fetch ALL events', status);
+              console.log(data, status);
+              $scope.load_error = 'Failed to fetch ALL events (' + status + ')';
           }).finally(function() {
               $scope.second_loading = false;
           });
     }
+
+    $scope.retryLoadAll = loadAll;
 
     function loadSome() {
         fetchEvents({limit: $scope.pageSize})
@@ -299,18 +347,15 @@ function EventManagerController($scope, $http, $localForage) {
               $scope.first_loading = false;
           });
     }
-    $localForage.getItem('eventmanager')
-    .then(function(data) {
-        // console.log("DATA", data);
-        if (data && data.urls && data.events) {
-            $scope.reading_from_cache = true;
-            $scope.first_loading = false;
-            $scope.urls = data.urls;
-            $scope.events = data.events;
-            loadAll();
-        } else {
-            loadSome();
-        }
-    });
+    var data = JSON.parse(localStorage.getItem('eventmanager') || '{}');
+    if (data && data.urls && data.events) {
+        $scope.reading_from_cache = true;
+        $scope.first_loading = false;
+        $scope.urls = data.urls;
+        $scope.events = data.events;
+        loadAll();
+    } else {
+        loadSome();
+    }
 
 }]);

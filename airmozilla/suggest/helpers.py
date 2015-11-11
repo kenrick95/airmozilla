@@ -1,5 +1,6 @@
+from django.core.urlresolvers import reverse
+
 from jingo import register
-from funfactory.urlresolvers import reverse
 
 
 _STATES = [
@@ -99,12 +100,6 @@ def suggest_breadcrumbs(event):
             links.append({
                 'url': reverse('suggest:popcorn', args=(event.pk,)),
                 'description': 'Popcorn URL',
-                'available': True,
-            })
-        else:
-            links.append({
-                'url': reverse('suggest:file', args=(event.pk,)),
-                'description': 'File',
                 'available': True,
             })
 

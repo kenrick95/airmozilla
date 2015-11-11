@@ -6,8 +6,7 @@ from nose.tools import eq_, ok_
 from django.contrib.auth.models import User, Group, Permission
 from django.utils import timezone
 from django.core import mail
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import (
     Event,
@@ -18,7 +17,8 @@ from airmozilla.main.models import (
     SuggestedEventComment,
     Template,
     LocationDefaultEnvironment,
-    Approval
+    Approval,
+    Topic,
 )
 from airmozilla.comments.models import (
     Discussion,
@@ -184,6 +184,7 @@ class TestSuggestions(ManageTestCase):
             submitted=now,
             first_submitted=now,
             popcorn_url='https://',
+            call_info='vidyo room',
         )
         event.tags.add(tag1)
         event.tags.add(tag2)
@@ -201,6 +202,13 @@ class TestSuggestions(ManageTestCase):
         ok_(os.path.basename(self.placeholder) in response.content)
         ok_(location.name in response.content)
         ok_(event.get_privacy_display() in response.content)
+        ok_('vidyo room' in response.content)
+        # Expect there to be a "Approve" and "Bounce back" button
+        # on the page.
+        ok_(
+            'Approve' in response.content and
+            'Bounce back' in response.content
+        )
 
         response = self.client.post(url)
         eq_(response.status_code, 302)
@@ -236,6 +244,15 @@ class TestSuggestions(ManageTestCase):
         # expect the link to the summary is in there
         summary_url = reverse('suggest:summary', args=(event.pk,))
         ok_(summary_url in email_sent.body)
+
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        # The "Approve" and "Bounce back" buttons should now be gone
+        ok_(not (
+            'Approve' in response.content and
+            'Bounce back' in response.content
+        ))
+        ok_(reverse('manage:event_edit', args=(real.id,)) in response.content)
 
     def test_approve_suggested_event_pre_recorded(self):
         bob = User.objects.create_user('bob', email='bob@mozilla.com')
@@ -336,7 +353,7 @@ class TestSuggestions(ManageTestCase):
         channel = Channel.objects.create(name='CHANNEL')
 
         # we need a group that can approve events
-        group = Group.objects.get(name='testapprover')
+        group = Group.objects.create(name='testapprover')
         permission = Permission.objects.get(codename='change_approval')
         group.permissions.add(permission)
 
@@ -448,6 +465,64 @@ class TestSuggestions(ManageTestCase):
         ok_(real_discussion.notify_all)
         ok_(richard in real_discussion.moderators.all())
         ok_(bob in real_discussion.moderators.all())
+
+    def test_approved_suggested_event_with_topics(self):
+        bob = User.objects.create_user('bob', email='bob@mozilla.com')
+        location = Location.objects.get(id=1)
+        now = timezone.now()
+        tomorrow = now + datetime.timedelta(days=1)
+        channel = Channel.objects.create(name='CHANNEL')
+
+        # create a suggested event that has everything filled in
+        event = SuggestedEvent.objects.create(
+            user=bob,
+            title='TITLE' * 10,
+            slug='SLUG',
+            short_description='SHORT DESCRIPTION',
+            description='DESCRIPTION',
+            start_time=tomorrow,
+            location=location,
+            placeholder_img=self.placeholder,
+            privacy=Event.PRIVACY_PUBLIC,
+            additional_links='ADDITIONAL LINKS',
+            remote_presenters='RICHARD & ZANDR',
+            upcoming=False,
+            popcorn_url='https://goodurl.com/',
+            submitted=now,
+            first_submitted=now,
+        )
+        event.channels.add(channel)
+
+        topic = Topic.objects.create(
+            topic='Money Matters',
+            is_active=True
+        )
+        group = Group.objects.create(name='PR')
+        # put some people in that group
+        user = User.objects.create_user('jessica', email='jessica@muzilla.com')
+        user.groups.add(group)
+        topic.groups.add(group)
+        event.topics.add(topic)
+
+        url = reverse('manage:suggestion_review', args=(event.pk,))
+        response = self.client.post(url)
+        eq_(response.status_code, 302)
+
+        # re-load it
+        event = SuggestedEvent.objects.get(pk=event.pk)
+        real = event.accepted
+        assert real.topics.all()
+
+        email_sent = mail.outbox[-2]  # last email goes to the user
+        eq_(email_sent.recipients(), ['jessica@muzilla.com'])
+        ok_('Approval requested' in email_sent.subject)
+        ok_(event.title in email_sent.subject)
+        ok_(
+            'requires approval from someone in your group' in
+            email_sent.body
+        )
+        ok_(reverse('manage:approvals') in email_sent.body)
+        ok_(topic.topic in email_sent.body)
 
     def test_reject_suggested_event(self):
         bob = User.objects.create_user('bob', email='bob@mozilla.com')
@@ -564,7 +639,7 @@ class TestSuggestions(ManageTestCase):
         ok_(email_sent.recipients(), [bob.email])
         ok_('New comment' in email_sent.subject)
         ok_(event.title in email_sent.subject)
-        ok_('<script>alert("xss")</script>' in email_sent.body)
+        ok_('&lt;script&gt;alert("xss")&lt;/script&gt;' in email_sent.body)
         ok_(reverse('suggest:summary', args=(event.pk,)) in email_sent.body)
 
     def test_retracted_comments_still_visible_in_management(self):
@@ -624,3 +699,57 @@ class TestSuggestions(ManageTestCase):
         response = self.client.get(summary_url)
         eq_(response.status_code, 200)
         ok_('Your event is no longer submitted' in response.content)
+
+    def test_unbounce_suggested_event(self):
+        # create a suggested event that has everything filled in
+        user = User.objects.create_user(
+            'bob',
+            email='bob@mozilla.com',
+            password='secret'
+        )
+        location = Location.objects.get(id=1)
+        now = timezone.now()
+        tomorrow = now + datetime.timedelta(days=1)
+        event = SuggestedEvent.objects.create(
+            user=user,
+            title='TITLE',
+            slug='SLUG',
+            short_description='SHORT DESCRIPTION',
+            description='DESCRIPTION',
+            start_time=tomorrow,
+            location=location,
+            placeholder_img=self.placeholder,
+            privacy=Event.PRIVACY_CONTRIBUTORS,
+            first_submitted=now,
+            submitted=now,
+        )
+        url = reverse('manage:suggestion_review', args=(event.pk,))
+        # first, let's bounce it
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Un-bounce' not in response.content)
+        response = self.client.post(url, {
+            'reject': 'reject',
+            'review_comments': 'My Reasons!',
+        })
+        eq_(response.status_code, 302)
+        # reload
+        event = SuggestedEvent.objects.get(id=event.id)
+        assert not event.submitted
+        assert event.first_submitted
+
+        # let's view it again
+        response = self.client.get(url)
+        eq_(response.status_code, 200)
+        ok_('Un-bounce' in response.content)
+        # also, it should show the last review comments
+        ok_('My Reasons!' in response.content)
+
+        # let's now really bounce it
+        response = self.client.post(url, {
+            'unbounce': 'unbounce',
+        })
+        eq_(response.status_code, 302)
+        # reload
+        event = SuggestedEvent.objects.get(id=event.id)
+        assert event.submitted

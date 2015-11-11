@@ -1,8 +1,7 @@
 from nose.tools import eq_, ok_
 
 from django.contrib.auth.models import Group
-
-from funfactory.urlresolvers import reverse
+from django.core.urlresolvers import reverse
 
 from airmozilla.main.models import Event
 from .base import ManageTestCase
@@ -10,8 +9,9 @@ from .base import ManageTestCase
 
 class TestManagementRoles(ManageTestCase):
     """Basic tests to ensure management roles / permissions are working."""
-    fixtures = ['airmozilla/manage/tests/main_testdata.json',
-                'airmozilla/manage/tests/manage_groups_testdata.json']
+    fixtures = ManageTestCase.fixtures + [
+        'airmozilla/manage/tests/manage_groups_testdata.json'
+    ]
 
     def setUp(self):
         super(TestManagementRoles, self).setUp()

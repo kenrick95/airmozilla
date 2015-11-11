@@ -11,6 +11,9 @@ from airmozilla.manage.helpers import (
     almost_equal,
     event_status_to_css_label,
     format_message,
+    formatduration,
+    highlight_stopwords,
+    highlight_matches,
 )
 
 
@@ -75,3 +78,36 @@ class MiscTests(TestCase):
             '<code>Code</code>'
         )
         ok_(isinstance(result, jinja2.Markup))
+
+    def test_formatduration(self):
+        output = formatduration(10)
+        eq_(output, '10s')
+        output = formatduration(60)
+        eq_(output, u'1m\xa00s')
+        output = formatduration(70)
+        eq_(output, u'1m\xa010s')
+        output = formatduration(60 * 60)
+        eq_(output, u'1h\xa00m\xa00s')
+        output = formatduration(60 * 60 + 61)
+        eq_(output, u'1h\xa01m\xa01s')
+
+    def test_highlight_stopwords(self):
+        result = highlight_stopwords(
+            'This is the - break point'
+        )
+        ok_(isinstance(result, jinja2.Markup))
+        ok_('<span class="stopword">This</span>' in result)
+        ok_('<span class="not-stopword">break</span>' in result)
+
+    def test_highlight_matches(self):
+        result = highlight_matches(
+            'This: is the - "break" po&int',
+            'this not break or pointing'
+        )
+        ok_(isinstance(result, jinja2.Markup))
+        ok_('<span class="match">This:</span>' in result)
+        ok_('<span class="stopword">is</span>' in result)
+        ok_('<span class="stopword">the</span>' in result)
+        ok_('<span class="match">&#34;break&#34;</span>' in result)
+        ok_('po&int' not in result)
+        ok_('po&amp;int' in result)

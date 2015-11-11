@@ -12,7 +12,7 @@ from .decorators import staff_required, permission_required
 
 @staff_required
 @permission_required('comments.change_discussion')
-@transaction.commit_on_success
+@transaction.atomic
 def all_comments(request):
     context = {}
 
@@ -32,10 +32,8 @@ def all_comments(request):
             filtered = True
         if form.cleaned_data['user']:
             user_filter = (
-                Q(user__email__icontains=form.cleaned_data['user'])
-                |
-                Q(user__first_name__icontains=form.cleaned_data['user'])
-                |
+                Q(user__email__icontains=form.cleaned_data['user']) |
+                Q(user__first_name__icontains=form.cleaned_data['user']) |
                 Q(user__last_name__icontains=form.cleaned_data['user'])
             )
             comments = comments.filter(user_filter)
@@ -57,7 +55,7 @@ def all_comments(request):
 
 @staff_required
 @permission_required('comments.change_comment')
-@transaction.commit_on_success
+@transaction.atomic
 def comment_edit(request, id):
     context = {}
     comment = get_object_or_404(Comment, id=id)
